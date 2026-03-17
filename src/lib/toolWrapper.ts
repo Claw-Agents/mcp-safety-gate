@@ -1,0 +1,171 @@
+/**
+ * Tool Handler Wrapper
+ * Wraps MCP tool handlers with security checks and audit logging
+ */
+
+import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { shouldBlockTool, validateToolArguments } from './policyEngine.js';
+import { logToolCall } from './auditLogger.js';
+import { SafetyGateConfig } from '../types/index.js';
+
+export type ToolMetadata = {
+  name: string;
+  description: string;
+};
+
+export type ToolHandler = () => Promise<CallToolResult>;
+
+/**
+ * Wrap a tool handler with security checks and audit logging
+ */
+export function wrapToolHandler(
+  toolMetadata: ToolMetadata,
+  originalHandler: ToolHandler,
+  config: SafetyGateConfig
+): (args: Record<string, unknown>) => Promise<CallToolResult> {
+  return async (arguments_: Record<string, unknown>): Promise<CallToolResult> => {
+    const startTime = Date.now();
+    const toolName = toolMetadata.name;
+
+    // Step 1: Validate arguments structure
+    const validationDecision = validateToolArguments(toolName, arguments_);
+    if (!validationDecision.allowed) {
+      const executionTimeMs = Date.now() - startTime;
+      await logToolCall(
+        {
+          timestamp: new Date().toISOString(),
+          toolName,
+          arguments: arguments_,
+          decision: 'denied',
+          reason: validationDecision.reason,
+          result: 'error',
+          executionTimeMs,
+        },
+        config.auditLogPath,
+        config.verbose
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Validation Error: ${validationDecision.reason}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Step 2: Check security policy
+    const policyDecision = shouldBlockTool(
+      toolName,
+      arguments_,
+      config.restrictedKeywords
+    );
+
+    if (!policyDecision.allowed) {
+      const executionTimeMs = Date.now() - startTime;
+      await logToolCall(
+        {
+          timestamp: new Date().toISOString(),
+          toolName,
+          arguments: arguments_,
+          decision: 'denied',
+          reason: policyDecision.reason,
+          blockedKeywords: policyDecision.blockedKeywords,
+          result: 'error',
+          executionTimeMs,
+        },
+        config.auditLogPath,
+        config.verbose
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Security Policy Violation: ${policyDecision.reason}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Step 3: Dry-run mode check
+    if (config.dryRun) {
+      const executionTimeMs = Date.now() - startTime;
+      await logToolCall(
+        {
+          timestamp: new Date().toISOString(),
+          toolName,
+          arguments: arguments_,
+          decision: 'dryrun',
+          reason: 'Dry-Run Mode: Tool execution simulated, not actually executed',
+          result: 'success',
+          executionTimeMs,
+        },
+        config.auditLogPath,
+        config.verbose
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Dry-Run: Tool '${toolName}' would execute with provided arguments (not actually run)`,
+          },
+        ],
+        isError: false,
+      };
+    }
+
+    // Step 4: Execute the tool (normal path)
+    try {
+      const result = await originalHandler();
+      const executionTimeMs = Date.now() - startTime;
+
+      await logToolCall(
+        {
+          timestamp: new Date().toISOString(),
+          toolName,
+          arguments: arguments_,
+          decision: 'allowed',
+          reason: 'Policy check passed - tool executed',
+          result: result.isError ? 'error' : 'success',
+          executionTimeMs,
+        },
+        config.auditLogPath,
+        config.verbose
+      );
+
+      return result;
+    } catch (error) {
+      const executionTimeMs = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      await logToolCall(
+        {
+          timestamp: new Date().toISOString(),
+          toolName,
+          arguments: arguments_,
+          decision: 'allowed',
+          reason: `Tool execution error: ${errorMessage}`,
+          result: 'error',
+          executionTimeMs,
+        },
+        config.auditLogPath,
+        config.verbose
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Tool execution error: ${errorMessage}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  };
+}
