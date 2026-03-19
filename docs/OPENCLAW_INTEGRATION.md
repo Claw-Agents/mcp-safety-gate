@@ -176,7 +176,7 @@ If approver auth is enabled:
 
 Expected result:
 - `get_approval_request` shows a richer request view
-- write approvals include a preview summary when available
+- write approvals include a unified diff preview when available
 - request moves from `pending` → `approved` → `executed`
 - metadata such as `approver`, `authenticated`, and `notes` persists
 - a second execution attempt is rejected

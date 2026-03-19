@@ -12,6 +12,20 @@ import { promises as fs2 } from "fs";
 // src/lib/policySchema.ts
 import { z } from "zod";
 var ruleEffectSchema = z.enum(["allow", "deny", "review"]);
+function regexArraySchema(label) {
+  return z.array(z.string().min(1)).superRefine((patterns, ctx) => {
+    for (const pattern of patterns) {
+      try {
+        new RegExp(pattern, "i");
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Invalid ${label} regex: ${pattern}`
+        });
+      }
+    }
+  });
+}
 var policyRuleSchema = z.object({
   id: z.string().min(1, "Rule id is required"),
   effect: ruleEffectSchema,
@@ -20,11 +34,11 @@ var policyRuleSchema = z.object({
   match: z.object({
     keywords: z.array(z.string().min(1)).optional(),
     pathSubstrings: z.array(z.string().min(1)).optional(),
-    pathRegexes: z.array(z.string().min(1)).optional(),
+    pathRegexes: regexArraySchema("path").optional(),
     pathBasenames: z.array(z.string().min(1)).optional(),
     pathExtensions: z.array(z.string().min(1)).optional(),
     commandNames: z.array(z.string().min(1)).optional(),
-    commandArgsRegexes: z.array(z.string().min(1)).optional()
+    commandArgsRegexes: regexArraySchema("command argument").optional()
   }).superRefine((value, ctx) => {
     const hasMatcher = (value.keywords?.length ?? 0) > 0 || (value.pathSubstrings?.length ?? 0) > 0 || (value.pathRegexes?.length ?? 0) > 0 || (value.pathBasenames?.length ?? 0) > 0 || (value.pathExtensions?.length ?? 0) > 0 || (value.commandNames?.length ?? 0) > 0 || (value.commandArgsRegexes?.length ?? 0) > 0;
     if (!hasMatcher) {

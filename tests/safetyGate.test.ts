@@ -8,6 +8,7 @@ import { evaluateToolPolicy } from '../src/lib/policyEngine.js';
 import { validatePolicy } from '../src/lib/policySchema.js';
 import { validateApproverAuth } from '../src/lib/approverSchema.js';
 import { authenticateApprover } from '../src/lib/approverAuth.js';
+import { sanitizeAuditArguments } from '../src/lib/auditHelpers.js';
 import { buildWriteFilePreview } from '../src/lib/writePreview.js';
 import { wrapToolHandler } from '../src/lib/toolWrapper.js';
 import {
@@ -411,4 +412,35 @@ test('write preview produces a unified diff for updated files', async () => {
     assert.match(preview, /@@/);
     assert.match(preview, /\+\{"name":"demo","version":"1.0.0"\}/);
   });
+});
+
+test('policy schema rejects invalid regex matchers', () => {
+  assert.throws(
+    () =>
+      validatePolicy({
+        version: 1,
+        rules: [
+          {
+            id: 'bad-regex',
+            effect: 'deny',
+            reason: 'broken regex should fail validation',
+            tools: ['read_file'],
+            match: {
+              pathRegexes: ['[broken'],
+            },
+          },
+        ],
+      }),
+    /Invalid path regex/
+  );
+});
+
+test('audit sanitization redacts auth tokens', () => {
+  const sanitized = sanitizeAuditArguments({
+    requestId: 'abc',
+    approver: 'liv',
+    authToken: 'super-secret',
+  });
+
+  assert.equal(sanitized.authToken, '[REDACTED]');
 });

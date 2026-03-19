@@ -7,6 +7,23 @@ import { SafetyGatePolicy } from '../types/index.js';
 
 const ruleEffectSchema = z.enum(['allow', 'deny', 'review']);
 
+function regexArraySchema(label: string) {
+  return z
+    .array(z.string().min(1))
+    .superRefine((patterns, ctx) => {
+      for (const pattern of patterns) {
+        try {
+          new RegExp(pattern, 'i');
+        } catch (error) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Invalid ${label} regex: ${pattern}`,
+          });
+        }
+      }
+    });
+}
+
 const policyRuleSchema = z.object({
   id: z.string().min(1, 'Rule id is required'),
   effect: ruleEffectSchema,
@@ -16,11 +33,11 @@ const policyRuleSchema = z.object({
     .object({
       keywords: z.array(z.string().min(1)).optional(),
       pathSubstrings: z.array(z.string().min(1)).optional(),
-      pathRegexes: z.array(z.string().min(1)).optional(),
+      pathRegexes: regexArraySchema('path').optional(),
       pathBasenames: z.array(z.string().min(1)).optional(),
       pathExtensions: z.array(z.string().min(1)).optional(),
       commandNames: z.array(z.string().min(1)).optional(),
-      commandArgsRegexes: z.array(z.string().min(1)).optional(),
+      commandArgsRegexes: regexArraySchema('command argument').optional(),
     })
     .superRefine((value, ctx) => {
       const hasMatcher =
