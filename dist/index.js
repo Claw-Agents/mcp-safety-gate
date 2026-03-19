@@ -1021,6 +1021,35 @@ function isApprovalExpired(resolvedAt, ttlSeconds) {
   const nowMs = Date.now();
   return nowMs - resolvedMs > ttlSeconds * 1e3;
 }
+function summarizeApprovalTarget(item) {
+  switch (item.toolName) {
+    case "write_file":
+    case "read_file":
+      return typeof item.arguments.path === "string" ? `path=${item.arguments.path}` : "path=<unknown>";
+    case "shell_command":
+      return typeof item.arguments.command === "string" ? `command=${item.arguments.command}` : "command=<unknown>";
+    default:
+      return JSON.stringify(item.arguments);
+  }
+}
+function formatApprovalRequestDetail(item) {
+  return [
+    `ID: ${item.id}`,
+    `Status: ${item.status}`,
+    `Tool: ${item.toolName}`,
+    `Target: ${summarizeApprovalTarget(item)}`,
+    `Reason: ${item.reason}`,
+    `Created: ${item.createdAt}`,
+    item.resolvedAt ? `Resolved: ${item.resolvedAt}` : void 0,
+    item.metadata?.approver ? `Approver: ${item.metadata.approver}` : void 0,
+    item.metadata?.authenticated !== void 0 ? `Authenticated: ${item.metadata.authenticated}` : void 0,
+    item.metadata?.notes ? `Notes: ${item.metadata.notes}` : void 0,
+    item.metadata?.rejectionReason ? `Rejection Reason: ${item.metadata.rejectionReason}` : void 0,
+    item.metadata?.executor ? `Executor: ${item.metadata.executor}` : void 0,
+    item.metadata?.executorAuthenticated !== void 0 ? `Executor Authenticated: ${item.metadata.executorAuthenticated}` : void 0,
+    `Arguments: ${JSON.stringify(item.arguments, null, 2)}`
+  ].filter(Boolean).join("\n");
+}
 function formatApprovalRequests(status, items) {
   if (items.length === 0) {
     return `No approval requests found for status: ${status}`;
@@ -1030,15 +1059,13 @@ function formatApprovalRequests(status, items) {
       `ID: ${item.id}`,
       `Status: ${item.status}`,
       `Tool: ${item.toolName}`,
+      `Target: ${summarizeApprovalTarget(item)}`,
       `Reason: ${item.reason}`,
-      `Created: ${item.createdAt}`,
-      item.resolvedAt ? `Resolved: ${item.resolvedAt}` : void 0,
       item.metadata?.approver ? `Approver: ${item.metadata.approver}` : void 0,
       item.metadata?.authenticated !== void 0 ? `Authenticated: ${item.metadata.authenticated}` : void 0,
-      item.metadata?.notes ? `Notes: ${item.metadata.notes}` : void 0,
-      item.metadata?.rejectionReason ? `Rejection Reason: ${item.metadata.rejectionReason}` : void 0,
       item.metadata?.executor ? `Executor: ${item.metadata.executor}` : void 0,
-      item.metadata?.executorAuthenticated !== void 0 ? `Executor Authenticated: ${item.metadata.executorAuthenticated}` : void 0
+      item.metadata?.executorAuthenticated !== void 0 ? `Executor Authenticated: ${item.metadata.executorAuthenticated}` : void 0,
+      item.metadata?.notes ? `Notes: ${item.metadata.notes}` : void 0
     ].filter(Boolean).join("\n")
   ).join("\n\n");
 }
@@ -1124,6 +1151,18 @@ async function main() {
         status === "all" ? void 0 : status
       );
       return ok2(formatApprovalRequests(status, requests));
+    }
+  );
+  server.tool(
+    "get_approval_request",
+    "Get detailed information for a single approval request",
+    {
+      requestId: z3.string().describe("Approval request ID to inspect")
+    },
+    async (args) => {
+      const requestId = args.requestId;
+      const request = await getApprovalRequest(config.approvalStorePath, requestId);
+      return request ? ok2(formatApprovalRequestDetail(request)) : err2(`Approval request not found: ${requestId}`);
     }
   );
   server.tool(
@@ -1276,7 +1315,7 @@ async function main() {
       }
     }
   );
-  console.error("[SafetyGate] Registered 7 tools with security wrapping and approvals");
+  console.error("[SafetyGate] Registered 8 tools with security wrapping and approvals");
   console.error("[SafetyGate] Starting stdio transport...");
   const transport = new StdioServerTransport();
   await server.connect(transport);

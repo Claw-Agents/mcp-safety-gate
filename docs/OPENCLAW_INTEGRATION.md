@@ -162,8 +162,9 @@ Expected result:
 Use the approval-management tools:
 
 1. `list_approval_requests`
-2. `approve_request`
-3. `execute_approved_request`
+2. `get_approval_request`
+3. `approve_request`
+4. `execute_approved_request`
 
 If approver auth is enabled:
 - `approve_request` / `reject_request` must include:

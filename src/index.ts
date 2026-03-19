@@ -101,6 +101,65 @@ function isApprovalExpired(resolvedAt: string | undefined, ttlSeconds: number): 
   return nowMs - resolvedMs > ttlSeconds * 1000;
 }
 
+function summarizeApprovalTarget(item: { toolName: string; arguments: Record<string, unknown> }): string {
+  switch (item.toolName) {
+    case 'write_file':
+    case 'read_file':
+      return typeof item.arguments.path === 'string'
+        ? `path=${item.arguments.path}`
+        : 'path=<unknown>';
+    case 'shell_command':
+      return typeof item.arguments.command === 'string'
+        ? `command=${item.arguments.command}`
+        : 'command=<unknown>';
+    default:
+      return JSON.stringify(item.arguments);
+  }
+}
+
+function formatApprovalRequestDetail(item: {
+  id: string;
+  status: string;
+  toolName: string;
+  reason: string;
+  createdAt: string;
+  resolvedAt?: string;
+  arguments: Record<string, unknown>;
+  metadata?: {
+    approver?: string;
+    authenticated?: boolean;
+    notes?: string;
+    rejectionReason?: string;
+    executor?: string;
+    executorAuthenticated?: boolean;
+  };
+}): string {
+  return [
+    `ID: ${item.id}`,
+    `Status: ${item.status}`,
+    `Tool: ${item.toolName}`,
+    `Target: ${summarizeApprovalTarget(item)}`,
+    `Reason: ${item.reason}`,
+    `Created: ${item.createdAt}`,
+    item.resolvedAt ? `Resolved: ${item.resolvedAt}` : undefined,
+    item.metadata?.approver ? `Approver: ${item.metadata.approver}` : undefined,
+    item.metadata?.authenticated !== undefined
+      ? `Authenticated: ${item.metadata.authenticated}`
+      : undefined,
+    item.metadata?.notes ? `Notes: ${item.metadata.notes}` : undefined,
+    item.metadata?.rejectionReason
+      ? `Rejection Reason: ${item.metadata.rejectionReason}`
+      : undefined,
+    item.metadata?.executor ? `Executor: ${item.metadata.executor}` : undefined,
+    item.metadata?.executorAuthenticated !== undefined
+      ? `Executor Authenticated: ${item.metadata.executorAuthenticated}`
+      : undefined,
+    `Arguments: ${JSON.stringify(item.arguments, null, 2)}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 function formatApprovalRequests(
   status: ApprovalStatus | 'all',
   items: Awaited<ReturnType<typeof listApprovalRequests>>
@@ -115,21 +174,17 @@ function formatApprovalRequests(
         `ID: ${item.id}`,
         `Status: ${item.status}`,
         `Tool: ${item.toolName}`,
+        `Target: ${summarizeApprovalTarget(item)}`,
         `Reason: ${item.reason}`,
-        `Created: ${item.createdAt}`,
-        item.resolvedAt ? `Resolved: ${item.resolvedAt}` : undefined,
         item.metadata?.approver ? `Approver: ${item.metadata.approver}` : undefined,
         item.metadata?.authenticated !== undefined
           ? `Authenticated: ${item.metadata.authenticated}`
-          : undefined,
-        item.metadata?.notes ? `Notes: ${item.metadata.notes}` : undefined,
-        item.metadata?.rejectionReason
-          ? `Rejection Reason: ${item.metadata.rejectionReason}`
           : undefined,
         item.metadata?.executor ? `Executor: ${item.metadata.executor}` : undefined,
         item.metadata?.executorAuthenticated !== undefined
           ? `Executor Authenticated: ${item.metadata.executorAuthenticated}`
           : undefined,
+        item.metadata?.notes ? `Notes: ${item.metadata.notes}` : undefined,
       ]
         .filter(Boolean)
         .join('\n')
@@ -237,7 +292,23 @@ async function main(): Promise<void> {
     }
   );
 
-  // Tool 5: approve_request
+  // Tool 5: get_approval_request
+  server.tool(
+    'get_approval_request',
+    'Get detailed information for a single approval request',
+    {
+      requestId: z.string().describe('Approval request ID to inspect'),
+    } as any,
+    async (args: any) => {
+      const requestId = (args as { requestId: string }).requestId;
+      const request = await getApprovalRequest(config.approvalStorePath, requestId);
+      return request
+        ? ok(formatApprovalRequestDetail(request))
+        : err(`Approval request not found: ${requestId}`);
+    }
+  );
+
+  // Tool 6: approve_request
   server.tool(
     'approve_request',
     'Approve a pending review request',
@@ -282,7 +353,7 @@ async function main(): Promise<void> {
     }
   );
 
-  // Tool 6: reject_request
+  // Tool 7: reject_request
   server.tool(
     'reject_request',
     'Reject a pending review request',
@@ -330,7 +401,7 @@ async function main(): Promise<void> {
     }
   );
 
-  // Tool 7: execute_approved_request
+  // Tool 8: execute_approved_request
   server.tool(
     'execute_approved_request',
     'Execute a previously approved request',
@@ -415,7 +486,7 @@ async function main(): Promise<void> {
     }
   );
 
-  console.error('[SafetyGate] Registered 7 tools with security wrapping and approvals');
+  console.error('[SafetyGate] Registered 8 tools with security wrapping and approvals');
   console.error('[SafetyGate] Starting stdio transport...');
 
   // Start the server

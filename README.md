@@ -177,15 +177,19 @@ Read content from a file with path sandboxing and size limits.
 
 List approval requests tracked by Safety Gate.
 
-### 5. `approve_request`
+### 5. `get_approval_request`
+
+Get a more detailed view of a single approval request, including target summary and full arguments.
+
+### 6. `approve_request`
 
 Approve a pending request by ID. Supports optional approval metadata such as `approver` and `notes`.
 
-### 6. `reject_request`
+### 7. `reject_request`
 
 Reject a pending request by ID. Supports optional `approver`, `rejectionReason`, and `notes` metadata.
 
-### 7. `execute_approved_request`
+### 8. `execute_approved_request`
 
 Execute a previously approved request by ID.
 
