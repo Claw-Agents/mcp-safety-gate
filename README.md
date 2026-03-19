@@ -561,6 +561,7 @@ For OpenClaw wiring and end-to-end verification, see:
 npm run typecheck
 npm test
 npm run build
+npm run integration:harness
 ```
 
 Current test coverage includes:
@@ -575,6 +576,7 @@ Current test coverage includes:
 - approval metadata for approvals and rejections
 - policy schema validation for valid and invalid policy files
 - validation of all example policy files in `policies/`
+- end-to-end MCP stdio integration via `scripts/integrationHarness.ts`
 
 ## Future Enhancements
 

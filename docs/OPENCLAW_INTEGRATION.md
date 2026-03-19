@@ -200,7 +200,23 @@ Check:
 - you used `execute_approved_request`
 - the original action still passes runtime safety checks like path sandboxing and shell allowlist
 
-## 9. Suggested next integration work
+## 9. Integration harness
+
+This repo also includes an end-to-end MCP stdio harness:
+
+```bash
+npm run integration:harness
+```
+
+What it verifies:
+- the built server launches over stdio
+- required tools are exposed
+- safe reads succeed
+- review-required writes create an approval request
+- approval metadata can be attached
+- approved requests can be executed successfully
+
+## 10. Suggested next integration work
 
 Once this is working, good follow-ups are:
 
