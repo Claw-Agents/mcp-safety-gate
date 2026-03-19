@@ -175,6 +175,8 @@ If approver auth is enabled:
   - `authToken`
 
 Expected result:
+- `get_approval_request` shows a richer request view
+- write approvals include a preview summary when available
 - request moves from `pending` → `approved` → `executed`
 - metadata such as `approver`, `authenticated`, and `notes` persists
 - a second execution attempt is rejected

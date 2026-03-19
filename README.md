@@ -179,7 +179,7 @@ List approval requests tracked by Safety Gate.
 
 ### 5. `get_approval_request`
 
-Get a more detailed view of a single approval request, including target summary and full arguments.
+Get a more detailed view of a single approval request, including target summary, write preview (when available), and full arguments.
 
 ### 6. `approve_request`
 

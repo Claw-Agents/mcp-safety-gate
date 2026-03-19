@@ -116,6 +116,7 @@ async function main(): Promise<void> {
     assert.equal(requestDetail.isError, false);
     assert.match(textFromResult(requestDetail), /Arguments:/);
     assert.match(textFromResult(requestDetail), /package.json/);
+    assert.match(textFromResult(requestDetail), /Write preview/);
 
     const badApproveResult = await client.callTool({
       name: 'approve_request',

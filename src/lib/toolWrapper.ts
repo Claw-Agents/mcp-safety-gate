@@ -8,6 +8,7 @@ import { evaluateToolPolicy, validateToolArguments } from './policyEngine.js';
 import { logToolCall } from './auditLogger.js';
 import { createApprovalRequest } from './approvalStore.js';
 import { sanitizeAuditArguments } from './auditHelpers.js';
+import { buildWriteFilePreview } from './writePreview.js';
 import { SafetyGateConfig } from '../types/index.js';
 
 export type ToolMetadata = {
@@ -93,11 +94,19 @@ export function wrapToolHandler(
     }
 
     if (policyDecision.effect === 'review') {
+      const preview =
+        toolName === 'write_file' &&
+        typeof arguments_.path === 'string' &&
+        typeof arguments_.content === 'string'
+          ? await buildWriteFilePreview(arguments_.path, arguments_.content, config.allowedPaths)
+          : undefined;
+
       const approvalRequest = await createApprovalRequest(config.approvalStorePath, {
         toolName,
         arguments: arguments_,
         reason: policyDecision.reason,
         ruleId: policyDecision.ruleId,
+        metadata: preview ? { preview } : undefined,
       });
 
       const executionTimeMs = Date.now() - startTime;

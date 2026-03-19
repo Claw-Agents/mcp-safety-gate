@@ -558,7 +558,8 @@ async function createApprovalRequest(storePath, input) {
     reason: input.reason,
     ruleId: input.ruleId,
     status: "pending",
-    createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    metadata: input.metadata
   };
   requests.push(request);
   await writeStore(storePath, requests);
@@ -595,6 +596,65 @@ function sanitizeAuditArguments(arguments_) {
     clone.authToken = "[REDACTED]";
   }
   return clone;
+}
+
+// src/lib/writePreview.ts
+import { promises as fs6 } from "fs";
+
+// src/lib/fsPolicy.ts
+import path5 from "path";
+import { promises as fs5 } from "fs";
+function isPathWithinAllowedRoots(targetPath, allowedRoots) {
+  const resolvedTarget = path5.resolve(targetPath);
+  return allowedRoots.some((root) => {
+    const resolvedRoot = path5.resolve(root);
+    const relative = path5.relative(resolvedRoot, resolvedTarget);
+    return relative === "" || !relative.startsWith("..") && !path5.isAbsolute(relative);
+  });
+}
+function assertPathAllowed(targetPath, allowedRoots) {
+  const resolvedTarget = path5.resolve(targetPath);
+  if (!isPathWithinAllowedRoots(resolvedTarget, allowedRoots)) {
+    throw new Error(
+      `Path is outside allowed roots: ${resolvedTarget}. Allowed roots: ${allowedRoots.join(", ")}`
+    );
+  }
+  return resolvedTarget;
+}
+async function ensureParentDirectory(targetPath) {
+  await fs5.mkdir(path5.dirname(targetPath), { recursive: true });
+}
+
+// src/lib/writePreview.ts
+function truncateLines(content, maxLines = 8) {
+  return content.split("\n").slice(0, maxLines).join("\n");
+}
+async function buildWriteFilePreview(targetPath, content, allowedPaths) {
+  if (!isPathWithinAllowedRoots(targetPath, allowedPaths)) {
+    return void 0;
+  }
+  const nextBytes = Buffer.byteLength(content, "utf-8");
+  try {
+    const existing = await fs6.readFile(targetPath, "utf-8");
+    const currentBytes = Buffer.byteLength(existing, "utf-8");
+    return [
+      `Write preview`,
+      `Existing bytes: ${currentBytes}`,
+      `Proposed bytes: ${nextBytes}`,
+      `--- Current (first lines) ---`,
+      truncateLines(existing),
+      `--- Proposed (first lines) ---`,
+      truncateLines(content)
+    ].join("\n");
+  } catch {
+    return [
+      `Write preview`,
+      `New file`,
+      `Proposed bytes: ${nextBytes}`,
+      `--- Proposed (first lines) ---`,
+      truncateLines(content)
+    ].join("\n");
+  }
 }
 
 // src/lib/toolWrapper.ts
@@ -659,11 +719,13 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
       };
     }
     if (policyDecision.effect === "review") {
+      const preview = toolName === "write_file" && typeof arguments_.path === "string" && typeof arguments_.content === "string" ? await buildWriteFilePreview(arguments_.path, arguments_.content, config.allowedPaths) : void 0;
       const approvalRequest = await createApprovalRequest(config.approvalStorePath, {
         toolName,
         arguments: arguments_,
         reason: policyDecision.reason,
-        ruleId: policyDecision.ruleId
+        ruleId: policyDecision.ruleId,
+        metadata: preview ? { preview } : void 0
       });
       const executionTimeMs = Date.now() - startTime;
       await logToolCall(
@@ -766,33 +828,9 @@ Approval Request ID: ${approvalRequest.id}`
 }
 
 // src/lib/realTools.ts
-import { promises as fs6 } from "fs";
+import { promises as fs7 } from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
-
-// src/lib/fsPolicy.ts
-import path5 from "path";
-import { promises as fs5 } from "fs";
-function isPathWithinAllowedRoots(targetPath, allowedRoots) {
-  const resolvedTarget = path5.resolve(targetPath);
-  return allowedRoots.some((root) => {
-    const resolvedRoot = path5.resolve(root);
-    const relative = path5.relative(resolvedRoot, resolvedTarget);
-    return relative === "" || !relative.startsWith("..") && !path5.isAbsolute(relative);
-  });
-}
-function assertPathAllowed(targetPath, allowedRoots) {
-  const resolvedTarget = path5.resolve(targetPath);
-  if (!isPathWithinAllowedRoots(resolvedTarget, allowedRoots)) {
-    throw new Error(
-      `Path is outside allowed roots: ${resolvedTarget}. Allowed roots: ${allowedRoots.join(", ")}`
-    );
-  }
-  return resolvedTarget;
-}
-async function ensureParentDirectory(targetPath) {
-  await fs5.mkdir(path5.dirname(targetPath), { recursive: true });
-}
 
 // src/lib/shellValidators.ts
 function extractPathLikeTokens(tokens) {
@@ -943,7 +981,7 @@ async function writeFileSafely(targetPath, content, config) {
       );
     }
     await ensureParentDirectory(resolvedPath);
-    await fs6.writeFile(resolvedPath, content, "utf-8");
+    await fs7.writeFile(resolvedPath, content, "utf-8");
     return ok(`File written: ${resolvedPath}
 Bytes written: ${byteLength}`);
   } catch (error) {
@@ -954,11 +992,11 @@ Bytes written: ${byteLength}`);
 async function readFileSafely(targetPath, config) {
   try {
     const resolvedPath = assertPathAllowed(targetPath, config.allowedPaths);
-    const stats = await fs6.stat(resolvedPath);
+    const stats = await fs7.stat(resolvedPath);
     if (stats.size > config.maxFileReadBytes) {
       throw new Error(`File exceeds MAX_FILE_READ_BYTES (${config.maxFileReadBytes} bytes)`);
     }
-    const content = await fs6.readFile(resolvedPath, "utf-8");
+    const content = await fs7.readFile(resolvedPath, "utf-8");
     return ok(`File read: ${resolvedPath}
 Content:
 ${content}`);
@@ -1045,6 +1083,8 @@ function formatApprovalRequestDetail(item) {
     item.metadata?.authenticated !== void 0 ? `Authenticated: ${item.metadata.authenticated}` : void 0,
     item.metadata?.notes ? `Notes: ${item.metadata.notes}` : void 0,
     item.metadata?.rejectionReason ? `Rejection Reason: ${item.metadata.rejectionReason}` : void 0,
+    item.metadata?.preview ? `Preview:
+${item.metadata.preview}` : void 0,
     item.metadata?.executor ? `Executor: ${item.metadata.executor}` : void 0,
     item.metadata?.executorAuthenticated !== void 0 ? `Executor Authenticated: ${item.metadata.executorAuthenticated}` : void 0,
     `Arguments: ${JSON.stringify(item.arguments, null, 2)}`

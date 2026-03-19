@@ -130,6 +130,7 @@ function formatApprovalRequestDetail(item: {
     authenticated?: boolean;
     notes?: string;
     rejectionReason?: string;
+    preview?: string;
     executor?: string;
     executorAuthenticated?: boolean;
   };
@@ -150,6 +151,7 @@ function formatApprovalRequestDetail(item: {
     item.metadata?.rejectionReason
       ? `Rejection Reason: ${item.metadata.rejectionReason}`
       : undefined,
+    item.metadata?.preview ? `Preview:\n${item.metadata.preview}` : undefined,
     item.metadata?.executor ? `Executor: ${item.metadata.executor}` : undefined,
     item.metadata?.executorAuthenticated !== undefined
       ? `Executor Authenticated: ${item.metadata.executorAuthenticated}`

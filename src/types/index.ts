@@ -52,6 +52,7 @@ export interface ApprovalRequestMetadata {
   authenticated?: boolean;
   executor?: string;
   executorAuthenticated?: boolean;
+  preview?: string;
 }
 
 export interface ApprovalRequest {
