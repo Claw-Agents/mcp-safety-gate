@@ -2,36 +2,80 @@
 
 ![CI](https://github.com/Claw-Agents/mcp-safety-gate/actions/workflows/ci.yml/badge.svg)
 
-Safety Gate is an **MCP server for OpenClaw** that wraps a small set of high-risk tools — currently `shell_command`, `read_file`, and `write_file` — with policy checks, approval workflows, and audit logging.
+**Safety Gate adds policy, approvals, and auditability to MCP tool execution for local AI agents.**
 
-This project is **not** trying to be a full OS sandbox. It is a policy-enforcing middleware layer for MCP tool execution, aimed at the awkward middle ground between:
+It is an **MCP server for OpenClaw** that wraps a narrow, high-risk tool surface — currently `shell_command`, `read_file`, and `write_file` — with policy checks, review gates, identity-aware approvals, and audit logging.
 
-- “just let the agent run tools”
-- and “disable everything”
+## The problem it solves
 
-## What it actually does
+If you give an agent direct shell and file access, you usually end up in one of three bad states:
+
+- **too permissive** — “just let it run tools”
+- **too restrictive** — “disable everything risky”
+- **too infrastructural** — “rebuild everything around a sandbox first”
+
+Safety Gate sits in the middle.
+
+It is for teams who want agents to remain useful **without** making risky actions invisible or unauditable.
+
+## What this project is
+
+Safety Gate is:
+
+- an **MCP middleware layer**
+- a **policy engine** for tool execution
+- an **approval workflow** for higher-risk actions
+- an **audit trail** for review / approval / execution lifecycle events
+- a **local-first control layer** for agent tool use
+
+## What this project is not
+
+Safety Gate is **not**:
+
+- a full OS sandbox
+- a VM or container runtime
+- a complete agent orchestration platform
+- a generic enterprise governance suite
+
+It complements runtime isolation; it does not replace it.
+
+## What it actually does today
 
 Safety Gate currently provides:
 
 - real `shell_command`, `read_file`, and `write_file` implementations
 - path sandboxing and shell allowlists
 - allow / deny / review policy decisions
-- authenticated approval and execution flows
+- authenticated approver and executor flows
 - approval expiry and replay protection
-- approval review UX with request detail views and write diffs
+- approval review UX with request detail views and unified write diffs
 - audit logging and end-to-end MCP integration tests
 
-## Features
+## Why it’s useful
 
-- **🔒 Instruction Filtering**: Validates tool arguments against restricted patterns and policy rules
+Use Safety Gate when you want:
+
+- agents to **read and modify files**, but only in approved roots
+- agents to run a **small set of shell commands**, but not arbitrary shell
+- risky changes to pause for **human review**
+- an answer to:
+  - who approved this?
+  - who executed it?
+  - why was it allowed?
+  - can this be replayed?
+
+## Core capabilities
+
+- **🔒 Policy-Enforced Tool Execution**: Wraps high-risk MCP tools with structured allow / deny / review decisions
 - **📁 Path Sandboxing**: Restricts file reads and writes to configured safe roots
 - **🖥️ Safe Shell Execution**: Executes only allowlisted shell commands, rejects shell metacharacters, validates path-like arguments, and enforces per-command argument validators
-- **🧭 Structured Policy Engine**: Supports per-tool allow/deny/review rules for keywords, paths, basenames, extensions, regexes, command names, and shell-argument regexes
-- **✋ Explicit Approval Workflow**: Review-required requests are persisted with request IDs and can be approved, rejected, listed, inspected, and executed later
+- **🧭 Smarter Policy Matching**: Supports matchers for keywords, paths, basenames, extensions, regexes, command names, and shell-argument regexes
+- **✋ Approval Workflow**: Review-required requests are persisted with request IDs and can be inspected, approved, rejected, and executed later
 - **🪪 Approval / Execution Identity**: Supports token-based approver and executor authentication
 - **⏳ Approval Expiry + Replay Protection**: Approved requests expire after a TTL and remain single-use
-- **📝 Audit Logging**: Records review, approval, rejection, execution, and expiry lifecycle events
-- **📋 MCP Compliant**: Follows the official Model Context Protocol specification using `@modelcontextprotocol/sdk`
+- **🔍 Review UX**: Supports detailed approval inspection and unified diff previews for `write_file`
+- **📝 Lifecycle Audit Trail**: Records review creation, approval, rejection, execution, and expiry events with actor metadata
+- **📋 MCP Compliant**: Built on `@modelcontextprotocol/sdk`
 
 ## Installation
 
