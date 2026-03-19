@@ -8,6 +8,7 @@ import { evaluateToolPolicy } from '../src/lib/policyEngine.js';
 import { validatePolicy } from '../src/lib/policySchema.js';
 import { validateApproverAuth } from '../src/lib/approverSchema.js';
 import { authenticateApprover } from '../src/lib/approverAuth.js';
+import { buildWriteFilePreview } from '../src/lib/writePreview.js';
 import { wrapToolHandler } from '../src/lib/toolWrapper.js';
 import {
   getApprovalRequest,
@@ -392,4 +393,22 @@ test('policy engine supports smarter path and shell argument matchers', () => {
     policy
   );
   assert.equal(denyFindDecision.effect, 'deny');
+});
+
+test('write preview produces a unified diff for updated files', async () => {
+  await withTempDir(async (dir, config) => {
+    const filePath = path.join(dir, 'package.json');
+    await fs.writeFile(filePath, '{"name":"demo"}\n', 'utf-8');
+
+    const preview = await buildWriteFilePreview(
+      filePath,
+      '{"name":"demo","version":"1.0.0"}\n',
+      config.allowedPaths
+    );
+
+    assert.ok(preview);
+    assert.match(preview, /--- Unified diff ---/);
+    assert.match(preview, /@@/);
+    assert.match(preview, /\+\{"name":"demo","version":"1.0.0"\}/);
+  });
 });
