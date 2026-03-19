@@ -551,9 +551,9 @@ Safety Gate now supports an optional token-based approver identity model.
 ### Mode
 
 - `APPROVER_AUTH_MODE=off` — approval metadata is accepted but not authenticated
-- `APPROVER_AUTH_MODE=token` — `approve_request` / `reject_request` require:
-  - `approver`
-  - `authToken`
+- `APPROVER_AUTH_MODE=token` — approval and execution actions require authenticated identities:
+  - `approve_request` / `reject_request` require `approver` + `authToken`
+  - `execute_approved_request` requires `executor` + `authToken`
 
 ### Approver config file
 
@@ -585,6 +585,7 @@ This keeps approver identity configuration in a file while keeping the actual se
 Approved requests are now intentionally short-lived and single-use:
 
 - `APPROVAL_TTL_SECONDS` controls how long an approval remains valid
+- if executor auth is enabled, `execute_approved_request` also requires authenticated identity
 - once executed, the request moves to `executed` and cannot be replayed
 - if execution is attempted after the TTL window, the request moves to `expired`
 

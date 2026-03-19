@@ -47,6 +47,7 @@ export interface ApprovalRequestMetadata {
   rejectionReason?: string;
   authenticated?: boolean;
   executor?: string;
+  executorAuthenticated?: boolean;
 }
 
 export interface ApprovalRequest {

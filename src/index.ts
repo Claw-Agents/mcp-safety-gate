@@ -93,6 +93,9 @@ function formatApprovalRequests(
           ? `Rejection Reason: ${item.metadata.rejectionReason}`
           : undefined,
         item.metadata?.executor ? `Executor: ${item.metadata.executor}` : undefined,
+        item.metadata?.executorAuthenticated !== undefined
+          ? `Executor Authenticated: ${item.metadata.executorAuthenticated}`
+          : undefined,
       ]
         .filter(Boolean)
         .join('\n')
@@ -281,11 +284,16 @@ async function main(): Promise<void> {
     'Execute a previously approved request',
     {
       requestId: z.string().describe('Approval request ID to execute'),
-      executor: z.string().optional().describe('Optional executor identity for audit trail'),
+      executor: z.string().optional().describe('Executor identity for audit trail'),
+      authToken: z.string().optional().describe('Executor authentication token when auth mode is enabled'),
     } as any,
     async (args: any) => {
       try {
-        const typedArgs = args as { requestId: string; executor?: string };
+        const typedArgs = args as {
+          requestId: string;
+          executor?: string;
+          authToken?: string;
+        };
         const requestId = typedArgs.requestId;
         const request = await getApprovalRequest(config.approvalStorePath, requestId);
 
@@ -297,13 +305,16 @@ async function main(): Promise<void> {
           return err(`Approval request ${requestId} is not approved (current status: ${request.status})`);
         }
 
+        const executorIdentity = authenticateApprover(typedArgs.executor, typedArgs.authToken, config);
+
         if (isApprovalExpired(request.resolvedAt, config.approvalTtlSeconds)) {
           await updateApprovalRequestStatus(config.approvalStorePath, requestId, 'expired', {
             approver: request.metadata?.approver,
             authenticated: request.metadata?.authenticated,
             notes: request.metadata?.notes,
             rejectionReason: request.metadata?.rejectionReason,
-            executor: typedArgs.executor,
+            executor: executorIdentity.approver,
+            executorAuthenticated: executorIdentity.authenticated,
           });
           return err(`Approval request ${requestId} has expired`);
         }
@@ -314,7 +325,8 @@ async function main(): Promise<void> {
           authenticated: request.metadata?.authenticated,
           notes: request.metadata?.notes,
           rejectionReason: request.metadata?.rejectionReason,
-          executor: typedArgs.executor,
+          executor: executorIdentity.approver,
+          executorAuthenticated: executorIdentity.authenticated,
         });
         return result;
       } catch (error) {

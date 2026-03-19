@@ -165,9 +165,13 @@ Use the approval-management tools:
 2. `approve_request`
 3. `execute_approved_request`
 
-If approver auth is enabled, `approve_request` / `reject_request` must include:
-- `approver`
-- `authToken`
+If approver auth is enabled:
+- `approve_request` / `reject_request` must include:
+  - `approver`
+  - `authToken`
+- `execute_approved_request` must include:
+  - `executor`
+  - `authToken`
 
 Expected result:
 - request moves from `pending` → `approved` → `executed`

@@ -129,9 +129,16 @@ async function main(): Promise<void> {
     });
     assert.equal(approveResult.isError, false);
 
+    const badExecuteResult = await client.callTool({
+      name: 'execute_approved_request',
+      arguments: { requestId, executor: 'liv', authToken: 'wrong-token' },
+    });
+    assert.equal(badExecuteResult.isError, true);
+    assert.match(textFromResult(badExecuteResult), /Invalid auth token/);
+
     const executeResult = await client.callTool({
       name: 'execute_approved_request',
-      arguments: { requestId },
+      arguments: { requestId, executor: 'liv', authToken: 'integration-secret' },
     });
     assert.equal(executeResult.isError, false);
 
@@ -152,6 +159,8 @@ async function main(): Promise<void> {
     const executedText = textFromResult(executedList);
     assert.match(executedText, /Approver: liv/);
     assert.match(executedText, /Authenticated: true/);
+    assert.match(executedText, /Executor: liv/);
+    assert.match(executedText, /Executor Authenticated: true/);
     assert.match(executedText, /approved during end-to-end test/);
 
     const expiringReviewResult = await client.callTool({
@@ -185,7 +194,11 @@ async function main(): Promise<void> {
 
     const expiredExecuteResult = await client.callTool({
       name: 'execute_approved_request',
-      arguments: { requestId: expiringRequestId },
+      arguments: {
+        requestId: expiringRequestId,
+        executor: 'liv',
+        authToken: 'integration-secret',
+      },
     });
     assert.equal(expiredExecuteResult.isError, true);
     assert.match(textFromResult(expiredExecuteResult), /has expired/);
