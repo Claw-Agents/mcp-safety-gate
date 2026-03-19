@@ -69,6 +69,7 @@ export async function getAuditLogStats(auditLogPath: string): Promise<{
   allowed: number;
   denied: number;
   dryrun: number;
+  review: number;
 }> {
   const entries = await readAuditLog(auditLogPath);
 
@@ -77,6 +78,7 @@ export async function getAuditLogStats(auditLogPath: string): Promise<{
     allowed: entries.filter(e => e.decision === 'allowed').length,
     denied: entries.filter(e => e.decision === 'denied').length,
     dryrun: entries.filter(e => e.decision === 'dryrun').length,
+    review: entries.filter(e => e.decision === 'review').length,
   };
 
   return stats;

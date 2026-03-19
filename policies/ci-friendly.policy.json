@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "deny-destructive-shell-keywords",
+      "effect": "deny",
+      "reason": "Destructive shell operations are denied",
+      "tools": ["shell_command"],
+      "match": {
+        "keywords": ["rm", "rmdir", "sudo", "shred", "mkfs", "dd"]
+      }
+    },
+    {
+      "id": "review-workflow-and-release-files",
+      "effect": "review",
+      "reason": "Workflow and release changes require review",
+      "tools": ["write_file"],
+      "match": {
+        "pathSubstrings": [".github/workflows/", "release", "package.json"]
+      }
+    },
+    {
+      "id": "deny-secret-access",
+      "effect": "deny",
+      "reason": "Secrets access is denied",
+      "tools": ["read_file", "write_file"],
+      "match": {
+        "pathSubstrings": [".env", ".pem", ".key", ".ssh/", ".aws/"]
+      }
+    }
+  ]
+}

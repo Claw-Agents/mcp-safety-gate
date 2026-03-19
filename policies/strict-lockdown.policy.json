@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "deny-all-shell-commands",
+      "effect": "deny",
+      "reason": "Shell execution is disabled in strict lockdown mode",
+      "tools": ["shell_command"],
+      "match": {
+        "commandNames": ["pwd", "ls", "cat", "head", "tail", "wc", "find", "grep", "which", "echo"]
+      }
+    },
+    {
+      "id": "deny-secret-file-writes",
+      "effect": "deny",
+      "reason": "Secret-bearing file writes are denied",
+      "tools": ["write_file"],
+      "match": {
+        "pathSubstrings": [".env", ".pem", ".key", ".ssh/", ".aws/"]
+      }
+    },
+    {
+      "id": "review-build-and-config-writes",
+      "effect": "review",
+      "reason": "Build and config file writes require explicit approval",
+      "tools": ["write_file"],
+      "match": {
+        "pathSubstrings": ["package.json", "tsconfig.json", "Dockerfile", ".github/workflows/"]
+      }
+    },
+    {
+      "id": "review-sensitive-reads",
+      "effect": "review",
+      "reason": "Sensitive reads require explicit approval",
+      "tools": ["read_file"],
+      "match": {
+        "pathSubstrings": [".env", ".pem", ".key", ".ssh/", ".aws/"]
+      }
+    }
+  ]
+}

@@ -11,12 +11,85 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { loadConfig, logConfigOnStartup } from './lib/config.js';
 import { wrapToolHandler } from './lib/toolWrapper.js';
+import {
+  executeShellCommand,
+  readFileSafely,
+  writeFileSafely,
+} from './lib/realTools.js';
+import {
+  getApprovalRequest,
+  listApprovalRequests,
+  updateApprovalRequestStatus,
+} from './lib/approvalStore.js';
+import { ApprovalStatus, SafetyGateConfig } from './types/index.js';
+
+function ok(text: string): CallToolResult {
+  return {
+    content: [{ type: 'text', text }],
+    isError: false,
+  };
+}
+
+function err(text: string): CallToolResult {
+  return {
+    content: [{ type: 'text', text }],
+    isError: true,
+  };
+}
+
+async function dispatchToolExecution(
+  toolName: string,
+  args: Record<string, unknown>,
+  config: SafetyGateConfig
+): Promise<CallToolResult> {
+  switch (toolName) {
+    case 'shell_command':
+      return executeShellCommand((args as { command: string }).command, config);
+    case 'write_file': {
+      const { path, content } = args as { path: string; content: string };
+      return writeFileSafely(path, content, config);
+    }
+    case 'read_file':
+      return readFileSafely((args as { path: string }).path, config);
+    default:
+      return err(`Unknown tool in approval execution: ${toolName}`);
+  }
+}
+
+function formatApprovalRequests(
+  status: ApprovalStatus | 'all',
+  items: Awaited<ReturnType<typeof listApprovalRequests>>
+): string {
+  if (items.length === 0) {
+    return `No approval requests found for status: ${status}`;
+  }
+
+  return items
+    .map(item =>
+      [
+        `ID: ${item.id}`,
+        `Status: ${item.status}`,
+        `Tool: ${item.toolName}`,
+        `Reason: ${item.reason}`,
+        `Created: ${item.createdAt}`,
+        item.resolvedAt ? `Resolved: ${item.resolvedAt}` : undefined,
+        item.metadata?.approver ? `Approver: ${item.metadata.approver}` : undefined,
+        item.metadata?.notes ? `Notes: ${item.metadata.notes}` : undefined,
+        item.metadata?.rejectionReason
+          ? `Rejection Reason: ${item.metadata.rejectionReason}`
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    )
+    .join('\n\n');
+}
 
 /**
  * Main server initialization
  */
 async function main(): Promise<void> {
-  const config = loadConfig();
+  const config = await loadConfig();
 
   // Log configuration on startup
   console.error('[SafetyGate] Initializing Security Middleware...');
@@ -31,7 +104,7 @@ async function main(): Promise<void> {
   // Tool 1: shell_command
   server.tool(
     'shell_command',
-    'Execute a shell command (intercepted by Safety Gate)',
+    'Execute an allowlisted shell command within configured safe roots',
     {
       command: z.string().describe('The shell command to execute'),
     } as any,
@@ -39,20 +112,9 @@ async function main(): Promise<void> {
       const wrappedHandler = wrapToolHandler(
         {
           name: 'shell_command',
-          description: 'Execute a shell command (intercepted by Safety Gate)',
+          description: 'Execute an allowlisted shell command within configured safe roots',
         },
-        async () => {
-          const command = (args as { command: string }).command;
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `[MOCK] Shell command executed: ${command}\nstdout: (simulated output from: ${command})`,
-              },
-            ],
-            isError: false,
-          } as CallToolResult;
-        },
+        async () => executeShellCommand((args as { command: string }).command, config),
         config
       );
       return wrappedHandler(args);
@@ -62,7 +124,7 @@ async function main(): Promise<void> {
   // Tool 2: write_file
   server.tool(
     'write_file',
-    'Write content to a file (intercepted by Safety Gate)',
+    'Write content to a file within configured safe roots',
     {
       path: z.string().describe('The file path to write to'),
       content: z.string().describe('The content to write'),
@@ -71,19 +133,11 @@ async function main(): Promise<void> {
       const wrappedHandler = wrapToolHandler(
         {
           name: 'write_file',
-          description: 'Write content to a file (intercepted by Safety Gate)',
+          description: 'Write content to a file within configured safe roots',
         },
         async () => {
           const { path, content } = args as { path: string; content: string };
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `[MOCK] File written: ${path}\nBytes written: ${content.length}`,
-              },
-            ],
-            isError: false,
-          } as CallToolResult;
+          return writeFileSafely(path, content, config);
         },
         config
       );
@@ -94,7 +148,7 @@ async function main(): Promise<void> {
   // Tool 3: read_file
   server.tool(
     'read_file',
-    'Read content from a file (intercepted by Safety Gate)',
+    'Read content from a file within configured safe roots',
     {
       path: z.string().describe('The file path to read from'),
     } as any,
@@ -102,19 +156,11 @@ async function main(): Promise<void> {
       const wrappedHandler = wrapToolHandler(
         {
           name: 'read_file',
-          description: 'Read content from a file (intercepted by Safety Gate)',
+          description: 'Read content from a file within configured safe roots',
         },
         async () => {
           const { path } = args as { path: string };
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `[MOCK] File read: ${path}\nContent: (simulated file contents)`,
-              },
-            ],
-            isError: false,
-          } as CallToolResult;
+          return readFileSafely(path, config);
         },
         config
       );
@@ -122,7 +168,120 @@ async function main(): Promise<void> {
     }
   );
 
-  console.error('[SafetyGate] Registered 3 tools with security wrapping');
+  // Tool 4: list_approval_requests
+  server.tool(
+    'list_approval_requests',
+    'List approval requests tracked by Safety Gate',
+    {
+      status: z.enum(['all', 'pending', 'approved', 'rejected', 'executed']).optional(),
+    } as any,
+    async (args: any) => {
+      const status = (args?.status ?? 'all') as ApprovalStatus | 'all';
+      const requests = await listApprovalRequests(
+        config.approvalStorePath,
+        status === 'all' ? undefined : status
+      );
+      return ok(formatApprovalRequests(status, requests));
+    }
+  );
+
+  // Tool 5: approve_request
+  server.tool(
+    'approve_request',
+    'Approve a pending review request',
+    {
+      requestId: z.string().describe('Approval request ID to approve'),
+      approver: z.string().optional().describe('Human or system approving the request'),
+      notes: z.string().optional().describe('Optional approval notes'),
+    } as any,
+    async (args: any) => {
+      try {
+        const typedArgs = args as { requestId: string; approver?: string; notes?: string };
+        const request = await updateApprovalRequestStatus(
+          config.approvalStorePath,
+          typedArgs.requestId,
+          'approved',
+          {
+            approver: typedArgs.approver,
+            notes: typedArgs.notes,
+          }
+        );
+        return ok(`Approved request ${request.id} for tool ${request.toolName}`);
+      } catch (error) {
+        return err(error instanceof Error ? error.message : String(error));
+      }
+    }
+  );
+
+  // Tool 6: reject_request
+  server.tool(
+    'reject_request',
+    'Reject a pending review request',
+    {
+      requestId: z.string().describe('Approval request ID to reject'),
+      approver: z.string().optional().describe('Human or system rejecting the request'),
+      rejectionReason: z.string().optional().describe('Why the request was rejected'),
+      notes: z.string().optional().describe('Optional rejection notes'),
+    } as any,
+    async (args: any) => {
+      try {
+        const typedArgs = args as {
+          requestId: string;
+          approver?: string;
+          rejectionReason?: string;
+          notes?: string;
+        };
+        const request = await updateApprovalRequestStatus(
+          config.approvalStorePath,
+          typedArgs.requestId,
+          'rejected',
+          {
+            approver: typedArgs.approver,
+            rejectionReason: typedArgs.rejectionReason,
+            notes: typedArgs.notes,
+          }
+        );
+        return ok(`Rejected request ${request.id} for tool ${request.toolName}`);
+      } catch (error) {
+        return err(error instanceof Error ? error.message : String(error));
+      }
+    }
+  );
+
+  // Tool 7: execute_approved_request
+  server.tool(
+    'execute_approved_request',
+    'Execute a previously approved request',
+    {
+      requestId: z.string().describe('Approval request ID to execute'),
+    } as any,
+    async (args: any) => {
+      try {
+        const requestId = (args as { requestId: string }).requestId;
+        const request = await getApprovalRequest(config.approvalStorePath, requestId);
+
+        if (!request) {
+          return err(`Approval request not found: ${requestId}`);
+        }
+
+        if (request.status !== 'approved') {
+          return err(`Approval request ${requestId} is not approved (current status: ${request.status})`);
+        }
+
+        const result = await dispatchToolExecution(request.toolName, request.arguments, config);
+        await updateApprovalRequestStatus(config.approvalStorePath, requestId, 'executed', {
+          approver: request.metadata?.approver,
+          notes: request.metadata?.notes,
+          rejectionReason: request.metadata?.rejectionReason,
+        });
+        return result;
+      } catch (error) {
+        return err(error instanceof Error ? error.message : String(error));
+      }
+    }
+  );
+
+  console.error('[SafetyGate] Registered 7 tools with security wrapping and approvals');
   console.error('[SafetyGate] Starting stdio transport...');
 
   // Start the server
