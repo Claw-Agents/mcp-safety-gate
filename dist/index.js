@@ -642,6 +642,84 @@ async function ensureParentDirectory(targetPath) {
   await fs4.mkdir(path4.dirname(targetPath), { recursive: true });
 }
 
+// src/lib/shellValidators.ts
+function extractPathLikeTokens(tokens) {
+  return tokens.filter((token) => {
+    if (token.startsWith("-")) {
+      return false;
+    }
+    return token.startsWith("/") || token.startsWith("./") || token.startsWith("../") || token.includes("/") || token.includes(".");
+  });
+}
+function assertPathsAllowed(tokens, config) {
+  for (const token of extractPathLikeTokens(tokens)) {
+    assertPathAllowed(token, config.allowedPaths);
+  }
+}
+function validateLs(args, config) {
+  assertPathsAllowed(args, config);
+}
+function validateCatLike(commandName, args, config) {
+  const pathArgs = extractPathLikeTokens(args);
+  if (pathArgs.length === 0) {
+    throw new Error(`${commandName} requires at least one path argument`);
+  }
+  assertPathsAllowed(pathArgs, config);
+}
+function validateFind(args, config) {
+  const joined = args.join(" ");
+  const blockedFragments = ["-exec", "-delete", "-ok", "-okdir"];
+  for (const fragment of blockedFragments) {
+    if (joined.includes(fragment)) {
+      throw new Error(`find argument '${fragment}' is not allowed`);
+    }
+  }
+  const searchRoots = args.filter((arg) => !arg.startsWith("-"));
+  if (searchRoots.length === 0) {
+    throw new Error("find requires an explicit search root");
+  }
+  assertPathsAllowed([searchRoots[0]], config);
+}
+function validateGrep(args, config) {
+  if (args.includes("-R") || args.includes("-r") || args.includes("--recursive")) {
+    throw new Error("recursive grep is not allowed");
+  }
+  const pathArgs = extractPathLikeTokens(args);
+  if (pathArgs.length === 0) {
+    throw new Error("grep requires an explicit file path");
+  }
+  assertPathsAllowed(pathArgs, config);
+}
+function validateEcho(args) {
+  const totalLength = args.join(" ").length;
+  if (totalLength > 4096) {
+    throw new Error("echo payload is too large");
+  }
+}
+function validateShellArguments(commandName, args, config) {
+  switch (commandName) {
+    case "pwd":
+    case "which":
+      return;
+    case "ls":
+      return validateLs(args, config);
+    case "cat":
+    case "head":
+    case "tail":
+      return validateCatLike(commandName, args, config);
+    case "find":
+      return validateFind(args, config);
+    case "grep":
+      return validateGrep(args, config);
+    case "echo":
+      return validateEcho(args);
+    case "wc":
+      return validateCatLike(commandName, args, config);
+    default:
+      throw new Error(`No validator implemented for allowlisted command '${commandName}'`);
+  }
+}
+
 // src/lib/realTools.ts
 var execFileAsync = promisify(execFile);
 var SHELL_META_PATTERN = /[|&;><`$\\]/;
@@ -675,17 +753,6 @@ function assertAllowedCommand(commandName, config) {
     );
   }
 }
-function assertSafePathTokens(tokens, config) {
-  for (const token of tokens) {
-    if (token.startsWith("-")) {
-      continue;
-    }
-    const looksLikePath = token.startsWith("/") || token.startsWith("./") || token.startsWith("../") || token.includes("/");
-    if (looksLikePath) {
-      assertPathAllowed(token, config.allowedPaths);
-    }
-  }
-}
 async function executeShellCommand(command, config) {
   try {
     const tokens = tokenizeCommand(command);
@@ -694,7 +761,7 @@ async function executeShellCommand(command, config) {
       throw new Error("Command cannot be empty");
     }
     assertAllowedCommand(commandName, config);
-    assertSafePathTokens(args, config);
+    validateShellArguments(commandName, args, config);
     const { stdout, stderr } = await execFileAsync(commandName, args, {
       cwd: config.allowedPaths[0],
       timeout: config.shellCommandTimeoutMs,

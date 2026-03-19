@@ -6,7 +6,7 @@ A TypeScript-based Model Context Protocol (MCP) server that acts as a security m
 
 - **🔒 Instruction Filtering**: Validates tool arguments against a list of restricted keywords (e.g., `rm`, `sudo`, `.env`, etc.)
 - **📁 Path Sandboxing**: Restricts file reads and writes to configured safe roots
-- **🖥️ Safe Shell Execution**: Executes only allowlisted shell commands, rejects shell metacharacters, and validates path-like arguments
+- **🖥️ Safe Shell Execution**: Executes only allowlisted shell commands, rejects shell metacharacters, validates path-like arguments, and enforces per-command argument validators
 - **🧭 Structured Policy Engine**: Supports per-tool allow/deny/review rules for keywords, paths, and command names
 - **✋ Explicit Approval Workflow**: Review-required requests are persisted with request IDs and can be approved, rejected, listed, and executed later
 - **🏃 Dry-Run Mode**: Optional simulation mode that logs intended actions without executing them
@@ -110,6 +110,12 @@ Execute an allowlisted shell command with security checks.
 Safety Gate rejects shell metacharacters such as `&&`, `|`, `;`, redirections, command substitution, and backslashes. It also rejects commands that are not in the configured allowlist.
 
 Even if a command is allowlisted, it still passes through the structured policy engine first. That allows you to mark some patterns as **deny** and others as **review required**.
+
+It also now applies per-command validators. Examples:
+- `cat`, `head`, `tail`, `wc` require explicit path arguments
+- `grep` rejects recursive flags and requires explicit file paths
+- `find` rejects `-exec`, `-delete`, `-ok`, and `-okdir`
+- `echo` enforces a payload size limit
 
 **Input:**
 ```json
@@ -562,6 +568,7 @@ Current test coverage includes:
 - rejection of out-of-bounds paths
 - allowlisted shell execution
 - rejection of disallowed commands and shell metacharacters
+- per-command shell validator behavior for `grep`, `find`, and file-oriented commands
 - structured deny/review policy decisions
 - wrapper behavior for review-required requests
 - persisted approval request creation and approval transitions

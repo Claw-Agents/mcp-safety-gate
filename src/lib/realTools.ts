@@ -8,6 +8,7 @@ import { promisify } from 'util';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { SafetyGateConfig } from '../types/index.js';
 import { assertPathAllowed, ensureParentDirectory } from './fsPolicy.js';
+import { validateShellArguments } from './shellValidators.js';
 
 const execFileAsync = promisify(execFile);
 const SHELL_META_PATTERN = /[|&;><`$\\]/;
@@ -48,19 +49,6 @@ function assertAllowedCommand(commandName: string, config: SafetyGateConfig): vo
   }
 }
 
-function assertSafePathTokens(tokens: string[], config: SafetyGateConfig): void {
-  for (const token of tokens) {
-    if (token.startsWith('-')) {
-      continue;
-    }
-
-    const looksLikePath = token.startsWith('/') || token.startsWith('./') || token.startsWith('../') || token.includes('/');
-    if (looksLikePath) {
-      assertPathAllowed(token, config.allowedPaths);
-    }
-  }
-}
-
 export async function executeShellCommand(
   command: string,
   config: SafetyGateConfig
@@ -74,7 +62,7 @@ export async function executeShellCommand(
     }
 
     assertAllowedCommand(commandName, config);
-    assertSafePathTokens(args, config);
+    validateShellArguments(commandName, args, config);
 
     const { stdout, stderr } = await execFileAsync(commandName, args, {
       cwd: config.allowedPaths[0],

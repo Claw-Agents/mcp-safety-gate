@@ -22,7 +22,7 @@ async function withTempDir(run: (dir: string, config: SafetyGateConfig) => Promi
     auditLogPath: path.join(dir, 'audit.jsonl'),
     verbose: false,
     allowedPaths: [dir],
-    shellAllowedCommands: ['pwd', 'ls', 'cat', 'echo'],
+    shellAllowedCommands: ['pwd', 'ls', 'cat', 'echo', 'grep', 'find'],
     maxFileReadBytes: 1024 * 1024,
     maxFileWriteBytes: 1024 * 1024,
     shellCommandTimeoutMs: 3_000,
@@ -96,6 +96,29 @@ test('shell_command rejects non-allowlisted commands and shell metacharacters', 
     const metacharacters = await executeShellCommand('echo hi && pwd', config);
     assert.equal(metacharacters.isError, true);
     assert.match((metacharacters.content?.[0] as { text: string }).text, /metacharacters/);
+  });
+});
+
+test('shell validators reject unsafe grep and missing file arguments', async () => {
+  await withTempDir(async (dir, config) => {
+    const filePath = path.join(dir, 'notes.txt');
+    await fs.writeFile(filePath, 'hello\nworld\n', 'utf-8');
+
+    const recursiveGrep = await executeShellCommand(`grep -R hello ${dir}`, config);
+    assert.equal(recursiveGrep.isError, true);
+    assert.match((recursiveGrep.content?.[0] as { text: string }).text, /recursive grep is not allowed/);
+
+    const catWithoutPath = await executeShellCommand('cat', config);
+    assert.equal(catWithoutPath.isError, true);
+    assert.match((catWithoutPath.content?.[0] as { text: string }).text, /requires at least one path argument/);
+  });
+});
+
+test('shell validators reject dangerous find flags', async () => {
+  await withTempDir(async (dir, config) => {
+    const result = await executeShellCommand(`find ${dir} -type f -delete`, config);
+    assert.equal(result.isError, true);
+    assert.match((result.content?.[0] as { text: string }).text, /-delete/);
   });
 });
 
