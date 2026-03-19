@@ -241,6 +241,8 @@ What it verifies:
 - replay attempts are rejected
 - expired approvals are marked `expired` and blocked
 
+The policy engine also supports richer matchers than the original prototype, including path regexes, path basenames/extensions, and shell-argument regexes.
+
 ## 10. Suggested next integration work
 
 Once this is working, good follow-ups are:

@@ -522,7 +522,11 @@ Example policy file:
 Supported matchers:
 - `keywords` — case-insensitive substring match across string arguments
 - `pathSubstrings` — case-insensitive substring match against the `path` argument
+- `pathRegexes` — regex match against normalized `path`
+- `pathBasenames` — basename match such as `package.json`
+- `pathExtensions` — extension match such as `.pem`
 - `commandNames` — command-name match for `shell_command`
+- `commandArgsRegexes` — regex match against shell command arguments (excluding the command name)
 
 Policy files are schema-validated at startup. Invalid rules fail fast instead of silently falling back to odd runtime behavior.
 

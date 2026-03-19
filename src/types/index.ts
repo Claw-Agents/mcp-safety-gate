@@ -14,7 +14,11 @@ export interface PolicyRule {
   match: {
     keywords?: string[];
     pathSubstrings?: string[];
+    pathRegexes?: string[];
+    pathBasenames?: string[];
+    pathExtensions?: string[];
     commandNames?: string[];
+    commandArgsRegexes?: string[];
   };
 }
 

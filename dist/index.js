@@ -20,9 +20,13 @@ var policyRuleSchema = z.object({
   match: z.object({
     keywords: z.array(z.string().min(1)).optional(),
     pathSubstrings: z.array(z.string().min(1)).optional(),
-    commandNames: z.array(z.string().min(1)).optional()
+    pathRegexes: z.array(z.string().min(1)).optional(),
+    pathBasenames: z.array(z.string().min(1)).optional(),
+    pathExtensions: z.array(z.string().min(1)).optional(),
+    commandNames: z.array(z.string().min(1)).optional(),
+    commandArgsRegexes: z.array(z.string().min(1)).optional()
   }).superRefine((value, ctx) => {
-    const hasMatcher = (value.keywords?.length ?? 0) > 0 || (value.pathSubstrings?.length ?? 0) > 0 || (value.commandNames?.length ?? 0) > 0;
+    const hasMatcher = (value.keywords?.length ?? 0) > 0 || (value.pathSubstrings?.length ?? 0) > 0 || (value.pathRegexes?.length ?? 0) > 0 || (value.pathBasenames?.length ?? 0) > 0 || (value.pathExtensions?.length ?? 0) > 0 || (value.commandNames?.length ?? 0) > 0 || (value.commandArgsRegexes?.length ?? 0) > 0;
     if (!hasMatcher) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -317,12 +321,36 @@ function containsKeywords(values, keywords) {
 function extractPathValue(arguments_) {
   return typeof arguments_.path === "string" ? arguments_.path : void 0;
 }
+function normalizePathValue(pathValue) {
+  return pathValue ? path3.normalize(pathValue).toLowerCase() : void 0;
+}
 function matchesPathSubstrings(pathValue, pathSubstrings) {
+  const normalized = normalizePathValue(pathValue);
+  if (!normalized) {
+    return false;
+  }
+  return pathSubstrings.some((fragment) => normalized.includes(fragment.toLowerCase()));
+}
+function matchesPathRegexes(pathValue, pathRegexes) {
+  const normalized = normalizePathValue(pathValue);
+  if (!normalized) {
+    return false;
+  }
+  return pathRegexes.some((pattern) => new RegExp(pattern, "i").test(normalized));
+}
+function matchesPathBasenames(pathValue, basenames) {
   if (!pathValue) {
     return false;
   }
-  const normalized = path3.normalize(pathValue).toLowerCase();
-  return pathSubstrings.some((fragment) => normalized.includes(fragment.toLowerCase()));
+  const basename = path3.basename(pathValue).toLowerCase();
+  return basenames.some((entry) => entry.toLowerCase() === basename);
+}
+function matchesPathExtensions(pathValue, extensions) {
+  if (!pathValue) {
+    return false;
+  }
+  const ext = path3.extname(pathValue).toLowerCase();
+  return extensions.some((entry) => entry.toLowerCase() === ext);
 }
 function extractCommandName(arguments_) {
   if (typeof arguments_.command !== "string") {
@@ -334,6 +362,24 @@ function extractCommandName(arguments_) {
   }
   const [firstToken] = command.split(/\s+/, 1);
   return firstToken?.toLowerCase();
+}
+function extractCommandArgs(arguments_) {
+  if (typeof arguments_.command !== "string") {
+    return [];
+  }
+  const command = arguments_.command.trim();
+  if (!command) {
+    return [];
+  }
+  const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return tokens.slice(1).map((token) => token.replace(/^['"]|['"]$/g, ""));
+}
+function matchesCommandArgRegexes(arguments_, regexes) {
+  const joinedArgs = extractCommandArgs(arguments_).join(" ");
+  if (!joinedArgs) {
+    return false;
+  }
+  return regexes.some((pattern) => new RegExp(pattern, "i").test(joinedArgs));
 }
 function matchesRule(toolName, arguments_, rule) {
   if (!rule.tools.includes("*") && !rule.tools.includes(toolName)) {
@@ -349,8 +395,28 @@ function matchesRule(toolName, arguments_, rule) {
       return { matched: false };
     }
   }
+  if (matchers.commandArgsRegexes && matchers.commandArgsRegexes.length > 0) {
+    if (!matchesCommandArgRegexes(arguments_, matchers.commandArgsRegexes)) {
+      return { matched: false };
+    }
+  }
   if (matchers.pathSubstrings && matchers.pathSubstrings.length > 0) {
     if (!matchesPathSubstrings(pathValue, matchers.pathSubstrings)) {
+      return { matched: false };
+    }
+  }
+  if (matchers.pathRegexes && matchers.pathRegexes.length > 0) {
+    if (!matchesPathRegexes(pathValue, matchers.pathRegexes)) {
+      return { matched: false };
+    }
+  }
+  if (matchers.pathBasenames && matchers.pathBasenames.length > 0) {
+    if (!matchesPathBasenames(pathValue, matchers.pathBasenames)) {
+      return { matched: false };
+    }
+  }
+  if (matchers.pathExtensions && matchers.pathExtensions.length > 0) {
+    if (!matchesPathExtensions(pathValue, matchers.pathExtensions)) {
       return { matched: false };
     }
   }

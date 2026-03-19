@@ -16,13 +16,21 @@ const policyRuleSchema = z.object({
     .object({
       keywords: z.array(z.string().min(1)).optional(),
       pathSubstrings: z.array(z.string().min(1)).optional(),
+      pathRegexes: z.array(z.string().min(1)).optional(),
+      pathBasenames: z.array(z.string().min(1)).optional(),
+      pathExtensions: z.array(z.string().min(1)).optional(),
       commandNames: z.array(z.string().min(1)).optional(),
+      commandArgsRegexes: z.array(z.string().min(1)).optional(),
     })
     .superRefine((value, ctx) => {
       const hasMatcher =
         (value.keywords?.length ?? 0) > 0 ||
         (value.pathSubstrings?.length ?? 0) > 0 ||
-        (value.commandNames?.length ?? 0) > 0;
+        (value.pathRegexes?.length ?? 0) > 0 ||
+        (value.pathBasenames?.length ?? 0) > 0 ||
+        (value.pathExtensions?.length ?? 0) > 0 ||
+        (value.commandNames?.length ?? 0) > 0 ||
+        (value.commandArgsRegexes?.length ?? 0) > 0;
 
       if (!hasMatcher) {
         ctx.addIssue({
