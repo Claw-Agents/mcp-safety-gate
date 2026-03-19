@@ -51,7 +51,7 @@ Configuration is managed via environment variables:
 | `MAX_FILE_READ_BYTES` | Maximum bytes returned by `read_file` or shell output buffer | `1048576` | `MAX_FILE_READ_BYTES=262144` |
 | `MAX_FILE_WRITE_BYTES` | Maximum bytes accepted by `write_file` | `262144` | `MAX_FILE_WRITE_BYTES=65536` |
 | `SHELL_COMMAND_TIMEOUT_MS` | Timeout for allowlisted shell commands | `5000` | `SHELL_COMMAND_TIMEOUT_MS=2000` |
-| `POLICY_FILE` | Optional path to a JSON policy file overriding the built-in default policy | built-in default policy | `POLICY_FILE=./policy/safety-gate.policy.json` |
+| `POLICY_FILE` | Optional path to a JSON policy file overriding the built-in default policy. Invalid files fail fast at startup. | built-in default policy | `POLICY_FILE=./policy/safety-gate.policy.json` |
 | `APPROVAL_STORE_PATH` | JSON file used to persist approval requests | `./approval-requests.json` | `APPROVAL_STORE_PATH=./data/approval-requests.json` |
 
 ### Example: Starting in Dry-Run Mode
@@ -503,6 +503,8 @@ Supported matchers:
 - `pathSubstrings` — case-insensitive substring match against the `path` argument
 - `commandNames` — command-name match for `shell_command`
 
+Policy files are schema-validated at startup. Invalid rules fail fast instead of silently falling back to odd runtime behavior.
+
 ## Approval Workflow
 
 When a rule returns `review`, Safety Gate now:
@@ -534,6 +536,7 @@ Current test coverage includes:
 - structured deny/review policy decisions
 - wrapper behavior for review-required requests
 - persisted approval request creation and approval transitions
+- policy schema validation for valid and invalid policy files
 
 ## Future Enhancements
 

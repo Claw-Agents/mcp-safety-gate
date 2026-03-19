@@ -5,6 +5,7 @@
 import path from 'path';
 import { promises as fs } from 'fs';
 import { PolicyRule, SafetyGateConfig, SafetyGatePolicy } from '../types/index.js';
+import { validatePolicy } from './policySchema.js';
 
 // Hardcoded restricted keywords list
 const RESTRICTED_KEYWORDS = [
@@ -128,20 +129,22 @@ function parseNumberEnv(value: string | undefined, fallback: number): number {
 
 async function loadPolicy(policyFilePath?: string): Promise<SafetyGatePolicy> {
   if (!policyFilePath) {
-    return {
+    return validatePolicy({
       version: 1,
       rules: DEFAULT_POLICY_RULES,
-    };
+    });
   }
 
   const resolvedPolicyPath = path.resolve(policyFilePath);
   const content = await fs.readFile(resolvedPolicyPath, 'utf-8');
   const parsed = JSON.parse(content) as SafetyGatePolicy;
 
-  return {
-    version: parsed.version ?? 1,
-    rules: Array.isArray(parsed.rules) ? parsed.rules : DEFAULT_POLICY_RULES,
-  };
+  try {
+    return validatePolicy(parsed);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid policy file at ${resolvedPolicyPath}: ${message}`);
+  }
 }
 
 /**

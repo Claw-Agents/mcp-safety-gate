@@ -3,11 +3,43 @@
 // src/index.ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
+import { z as z2 } from "zod";
 
 // src/lib/config.ts
 import path from "path";
 import { promises as fs } from "fs";
+
+// src/lib/policySchema.ts
+import { z } from "zod";
+var ruleEffectSchema = z.enum(["allow", "deny", "review"]);
+var policyRuleSchema = z.object({
+  id: z.string().min(1, "Rule id is required"),
+  effect: ruleEffectSchema,
+  reason: z.string().min(1, "Rule reason is required"),
+  tools: z.array(z.string().min(1)).min(1, "At least one tool must be listed"),
+  match: z.object({
+    keywords: z.array(z.string().min(1)).optional(),
+    pathSubstrings: z.array(z.string().min(1)).optional(),
+    commandNames: z.array(z.string().min(1)).optional()
+  }).superRefine((value, ctx) => {
+    const hasMatcher = (value.keywords?.length ?? 0) > 0 || (value.pathSubstrings?.length ?? 0) > 0 || (value.commandNames?.length ?? 0) > 0;
+    if (!hasMatcher) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Rule match must contain at least one matcher"
+      });
+    }
+  })
+});
+var safetyGatePolicySchema = z.object({
+  version: z.number().int().positive(),
+  rules: z.array(policyRuleSchema)
+});
+function validatePolicy(input) {
+  return safetyGatePolicySchema.parse(input);
+}
+
+// src/lib/config.ts
 var RESTRICTED_KEYWORDS = [
   // System destructive operations
   "rm",
@@ -116,18 +148,20 @@ function parseNumberEnv(value, fallback) {
 }
 async function loadPolicy(policyFilePath) {
   if (!policyFilePath) {
-    return {
+    return validatePolicy({
       version: 1,
       rules: DEFAULT_POLICY_RULES
-    };
+    });
   }
   const resolvedPolicyPath = path.resolve(policyFilePath);
   const content = await fs.readFile(resolvedPolicyPath, "utf-8");
   const parsed = JSON.parse(content);
-  return {
-    version: parsed.version ?? 1,
-    rules: Array.isArray(parsed.rules) ? parsed.rules : DEFAULT_POLICY_RULES
-  };
+  try {
+    return validatePolicy(parsed);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid policy file at ${resolvedPolicyPath}: ${message}`);
+  }
 }
 async function loadConfig() {
   const dryRun = process.env.DRY_RUN === "true";
@@ -765,7 +799,7 @@ async function main() {
     "shell_command",
     "Execute an allowlisted shell command within configured safe roots",
     {
-      command: z.string().describe("The shell command to execute")
+      command: z2.string().describe("The shell command to execute")
     },
     async (args) => {
       const wrappedHandler = wrapToolHandler(
@@ -783,8 +817,8 @@ async function main() {
     "write_file",
     "Write content to a file within configured safe roots",
     {
-      path: z.string().describe("The file path to write to"),
-      content: z.string().describe("The content to write")
+      path: z2.string().describe("The file path to write to"),
+      content: z2.string().describe("The content to write")
     },
     async (args) => {
       const wrappedHandler = wrapToolHandler(
@@ -805,7 +839,7 @@ async function main() {
     "read_file",
     "Read content from a file within configured safe roots",
     {
-      path: z.string().describe("The file path to read from")
+      path: z2.string().describe("The file path to read from")
     },
     async (args) => {
       const wrappedHandler = wrapToolHandler(
@@ -826,7 +860,7 @@ async function main() {
     "list_approval_requests",
     "List approval requests tracked by Safety Gate",
     {
-      status: z.enum(["all", "pending", "approved", "rejected", "executed"]).optional()
+      status: z2.enum(["all", "pending", "approved", "rejected", "executed"]).optional()
     },
     async (args) => {
       const status = args?.status ?? "all";
@@ -841,7 +875,7 @@ async function main() {
     "approve_request",
     "Approve a pending review request",
     {
-      requestId: z.string().describe("Approval request ID to approve")
+      requestId: z2.string().describe("Approval request ID to approve")
     },
     async (args) => {
       try {
@@ -860,7 +894,7 @@ async function main() {
     "reject_request",
     "Reject a pending review request",
     {
-      requestId: z.string().describe("Approval request ID to reject")
+      requestId: z2.string().describe("Approval request ID to reject")
     },
     async (args) => {
       try {
@@ -879,7 +913,7 @@ async function main() {
     "execute_approved_request",
     "Execute a previously approved request",
     {
-      requestId: z.string().describe("Approval request ID to execute")
+      requestId: z2.string().describe("Approval request ID to execute")
     },
     async (args) => {
       try {

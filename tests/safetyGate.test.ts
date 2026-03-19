@@ -5,6 +5,7 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import { executeShellCommand, readFileSafely, writeFileSafely } from '../src/lib/realTools.js';
 import { evaluateToolPolicy } from '../src/lib/policyEngine.js';
+import { validatePolicy } from '../src/lib/policySchema.js';
 import { wrapToolHandler } from '../src/lib/toolWrapper.js';
 import {
   getApprovalRequest,
@@ -173,4 +174,42 @@ test('approval store can approve and fetch requests', async () => {
     const loaded = await getApprovalRequest(config.approvalStorePath, pending.id);
     assert.equal(loaded?.status, 'approved');
   });
+});
+
+test('policy schema validation accepts valid policies', () => {
+  const parsed = validatePolicy({
+    version: 1,
+    rules: [
+      {
+        id: 'review-package-json',
+        effect: 'review',
+        reason: 'package.json writes require review',
+        tools: ['write_file'],
+        match: {
+          pathSubstrings: ['package.json'],
+        },
+      },
+    ],
+  });
+
+  assert.equal(parsed.rules[0]?.id, 'review-package-json');
+});
+
+test('policy schema validation rejects malformed policies', () => {
+  assert.throws(
+    () =>
+      validatePolicy({
+        version: 1,
+        rules: [
+          {
+            id: 'bad-rule',
+            effect: 'review',
+            reason: 'Missing matchers should fail',
+            tools: ['write_file'],
+            match: {},
+          },
+        ],
+      }),
+    /at least one matcher/
+  );
 });
