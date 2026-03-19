@@ -12,6 +12,20 @@ import { promises as fs2 } from "fs";
 // src/lib/policySchema.ts
 import { z } from "zod";
 var ruleEffectSchema = z.enum(["allow", "deny", "review"]);
+function regexArraySchema(label) {
+  return z.array(z.string().min(1)).superRefine((patterns, ctx) => {
+    for (const pattern of patterns) {
+      try {
+        new RegExp(pattern, "i");
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Invalid ${label} regex: ${pattern}`
+        });
+      }
+    }
+  });
+}
 var policyRuleSchema = z.object({
   id: z.string().min(1, "Rule id is required"),
   effect: ruleEffectSchema,
@@ -20,11 +34,11 @@ var policyRuleSchema = z.object({
   match: z.object({
     keywords: z.array(z.string().min(1)).optional(),
     pathSubstrings: z.array(z.string().min(1)).optional(),
-    pathRegexes: z.array(z.string().min(1)).optional(),
+    pathRegexes: regexArraySchema("path").optional(),
     pathBasenames: z.array(z.string().min(1)).optional(),
     pathExtensions: z.array(z.string().min(1)).optional(),
     commandNames: z.array(z.string().min(1)).optional(),
-    commandArgsRegexes: z.array(z.string().min(1)).optional()
+    commandArgsRegexes: regexArraySchema("command argument").optional()
   }).superRefine((value, ctx) => {
     const hasMatcher = (value.keywords?.length ?? 0) > 0 || (value.pathSubstrings?.length ?? 0) > 0 || (value.pathRegexes?.length ?? 0) > 0 || (value.pathBasenames?.length ?? 0) > 0 || (value.pathExtensions?.length ?? 0) > 0 || (value.commandNames?.length ?? 0) > 0 || (value.commandArgsRegexes?.length ?? 0) > 0;
     if (!hasMatcher) {
@@ -626,8 +640,37 @@ async function ensureParentDirectory(targetPath) {
 }
 
 // src/lib/writePreview.ts
-function truncateLines(content, maxLines = 8) {
-  return content.split("\n").slice(0, maxLines).join("\n");
+function trimTrailingEmptyLine(lines) {
+  return lines.length > 0 && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
+}
+function buildUnifiedDiff(currentContent, nextContent, maxChangedLines = 80) {
+  const currentLines = trimTrailingEmptyLine(currentContent.split("\n"));
+  const nextLines = trimTrailingEmptyLine(nextContent.split("\n"));
+  let prefix = 0;
+  while (prefix < currentLines.length && prefix < nextLines.length && currentLines[prefix] === nextLines[prefix]) {
+    prefix += 1;
+  }
+  let currentSuffix = currentLines.length - 1;
+  let nextSuffix = nextLines.length - 1;
+  while (currentSuffix >= prefix && nextSuffix >= prefix && currentLines[currentSuffix] === nextLines[nextSuffix]) {
+    currentSuffix -= 1;
+    nextSuffix -= 1;
+  }
+  const removed = currentLines.slice(prefix, currentSuffix + 1);
+  const added = nextLines.slice(prefix, nextSuffix + 1);
+  const changedLineCount = removed.length + added.length;
+  const diffLines = [
+    `@@ -${prefix + 1},${Math.max(removed.length, 0)} +${prefix + 1},${Math.max(added.length, 0)} @@`,
+    ...removed.map((line) => `-${line}`),
+    ...added.map((line) => `+${line}`)
+  ];
+  if (changedLineCount > maxChangedLines) {
+    return [
+      ...diffLines.slice(0, maxChangedLines + 1),
+      `... diff truncated (${changedLineCount - maxChangedLines} more changed lines)`
+    ].join("\n");
+  }
+  return diffLines.join("\n");
 }
 async function buildWriteFilePreview(targetPath, content, allowedPaths) {
   if (!isPathWithinAllowedRoots(targetPath, allowedPaths)) {
@@ -637,22 +680,23 @@ async function buildWriteFilePreview(targetPath, content, allowedPaths) {
   try {
     const existing = await fs6.readFile(targetPath, "utf-8");
     const currentBytes = Buffer.byteLength(existing, "utf-8");
+    const diff = buildUnifiedDiff(existing, content);
     return [
       `Write preview`,
       `Existing bytes: ${currentBytes}`,
       `Proposed bytes: ${nextBytes}`,
-      `--- Current (first lines) ---`,
-      truncateLines(existing),
-      `--- Proposed (first lines) ---`,
-      truncateLines(content)
+      `--- Unified diff ---`,
+      diff
     ].join("\n");
   } catch {
+    const addedLines = trimTrailingEmptyLine(content.split("\n")).map((line) => `+${line}`);
     return [
       `Write preview`,
       `New file`,
       `Proposed bytes: ${nextBytes}`,
-      `--- Proposed (first lines) ---`,
-      truncateLines(content)
+      `--- Unified diff ---`,
+      `@@ -0,0 +1,${addedLines.length} @@`,
+      ...addedLines
     ].join("\n");
   }
 }
