@@ -1,6 +1,18 @@
 # Safety Gate - MCP Security Middleware
 
+![CI](https://github.com/obfuscAIte/mcp-safety-gate/actions/workflows/ci.yml/badge.svg)
+
 A TypeScript-based Model Context Protocol (MCP) server that acts as a security middleware for OpenClaw. It intercepts tool execution requests, applies security policies, and maintains audit logs.
+
+## Why this is useful
+
+Safety Gate is for the awkward middle ground between “just let the agent run tools” and “shut everything off.” It gives you:
+
+- safer local file and shell execution
+- structured policy control
+- review gates for higher-risk actions
+- persisted approvals with metadata
+- auditability
 
 ## Features
 
@@ -554,6 +566,7 @@ export POLICY_FILE=./policies/dev-balanced.policy.json
 For OpenClaw wiring and end-to-end verification, see:
 
 - [`docs/OPENCLAW_INTEGRATION.md`](./docs/OPENCLAW_INTEGRATION.md)
+- [`docs/RELEASE_CHECKLIST.md`](./docs/RELEASE_CHECKLIST.md)
 
 ## Testing
 
