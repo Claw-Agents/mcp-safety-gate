@@ -3,11 +3,11 @@
 // src/index.ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z as z2 } from "zod";
+import { z as z3 } from "zod";
 
 // src/lib/config.ts
-import path from "path";
-import { promises as fs } from "fs";
+import path2 from "path";
+import { promises as fs2 } from "fs";
 
 // src/lib/policySchema.ts
 import { z } from "zod";
@@ -37,6 +37,72 @@ var safetyGatePolicySchema = z.object({
 });
 function validatePolicy(input) {
   return safetyGatePolicySchema.parse(input);
+}
+
+// src/lib/approverAuth.ts
+import { promises as fs } from "fs";
+import path from "path";
+
+// src/lib/approverSchema.ts
+import { z as z2 } from "zod";
+var approverEntrySchema = z2.object({
+  id: z2.string().min(1, "Approver id is required"),
+  tokenEnv: z2.string().min(1, "Approver tokenEnv is required")
+});
+var approverAuthSchema = z2.object({
+  version: z2.number().int().positive(),
+  approvers: z2.array(approverEntrySchema).min(1, "At least one approver must be configured")
+});
+function validateApproverAuth(input) {
+  return approverAuthSchema.parse(input);
+}
+
+// src/lib/approverAuth.ts
+async function loadApproverAuth(mode, approverAuthFilePath) {
+  if (mode === "off") {
+    return void 0;
+  }
+  if (!approverAuthFilePath) {
+    throw new Error("APPROVER_AUTH_MODE=token requires APPROVER_AUTH_FILE");
+  }
+  const resolvedPath = path.resolve(approverAuthFilePath);
+  const content = await fs.readFile(resolvedPath, "utf-8");
+  const parsed = JSON.parse(content);
+  try {
+    return validateApproverAuth(parsed);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid approver auth file at ${resolvedPath}: ${message}`);
+  }
+}
+function authenticateApprover(approver, authToken, config) {
+  if (config.approverAuthMode === "off") {
+    return {
+      approver: approver ?? "unverified-approver",
+      authenticated: false
+    };
+  }
+  if (!approver) {
+    throw new Error("Approver id is required when approver auth is enabled");
+  }
+  if (!authToken) {
+    throw new Error("authToken is required when approver auth is enabled");
+  }
+  const approverConfig = config.approverAuth?.approvers.find((entry) => entry.id === approver);
+  if (!approverConfig) {
+    throw new Error(`Unknown approver: ${approver}`);
+  }
+  const expectedToken = process.env[approverConfig.tokenEnv];
+  if (!expectedToken) {
+    throw new Error(`Missing environment token for approver '${approver}' (${approverConfig.tokenEnv})`);
+  }
+  if (authToken !== expectedToken) {
+    throw new Error(`Invalid auth token for approver '${approver}'`);
+  }
+  return {
+    approver,
+    authenticated: true
+  };
 }
 
 // src/lib/config.ts
@@ -153,8 +219,8 @@ async function loadPolicy(policyFilePath) {
       rules: DEFAULT_POLICY_RULES
     });
   }
-  const resolvedPolicyPath = path.resolve(policyFilePath);
-  const content = await fs.readFile(resolvedPolicyPath, "utf-8");
+  const resolvedPolicyPath = path2.resolve(policyFilePath);
+  const content = await fs2.readFile(resolvedPolicyPath, "utf-8");
   const parsed = JSON.parse(content);
   try {
     return validatePolicy(parsed);
@@ -168,13 +234,15 @@ async function loadConfig() {
   const verbose = process.env.VERBOSE === "true";
   const auditLogPath = process.env.AUDIT_LOG_PATH || "./audit_log.json";
   const allowedPaths = parseListEnv(process.env.ALLOWED_PATHS, [process.cwd()]).map(
-    (entry) => path.resolve(entry)
+    (entry) => path2.resolve(entry)
   );
   const shellAllowedCommands = parseListEnv(
     process.env.SHELL_ALLOWED_COMMANDS,
     DEFAULT_SHELL_ALLOWED_COMMANDS
   ).map((command) => command.toLowerCase());
-  const policyFilePath = process.env.POLICY_FILE ? path.resolve(process.env.POLICY_FILE) : void 0;
+  const policyFilePath = process.env.POLICY_FILE ? path2.resolve(process.env.POLICY_FILE) : void 0;
+  const approverAuthMode = process.env.APPROVER_AUTH_MODE === "token" ? "token" : "off";
+  const approverAuthFilePath = process.env.APPROVER_AUTH_FILE ? path2.resolve(process.env.APPROVER_AUTH_FILE) : void 0;
   return {
     dryRun,
     restrictedKeywords: RESTRICTED_KEYWORDS,
@@ -187,7 +255,11 @@ async function loadConfig() {
     shellCommandTimeoutMs: parseNumberEnv(process.env.SHELL_COMMAND_TIMEOUT_MS, 5e3),
     policy: await loadPolicy(policyFilePath),
     policyFilePath,
-    approvalStorePath: path.resolve(process.env.APPROVAL_STORE_PATH || "./approval-requests.json")
+    approvalStorePath: path2.resolve(process.env.APPROVAL_STORE_PATH || "./approval-requests.json"),
+    approvalTtlSeconds: parseNumberEnv(process.env.APPROVAL_TTL_SECONDS, 3600),
+    approverAuthMode,
+    approverAuthFilePath,
+    approverAuth: await loadApproverAuth(approverAuthMode, approverAuthFilePath)
   };
 }
 function logConfigOnStartup(config) {
@@ -202,12 +274,15 @@ function logConfigOnStartup(config) {
   console.log(`  Policy File: ${config.policyFilePath ?? "<built-in default>"}`);
   console.log(`  Policy Rules: ${config.policy.rules.length}`);
   console.log(`  Approval Store: ${config.approvalStorePath}`);
+  console.log(`  Approval TTL Seconds: ${config.approvalTtlSeconds}`);
+  console.log(`  Approver Auth Mode: ${config.approverAuthMode}`);
+  console.log(`  Approver Auth File: ${config.approverAuthFilePath ?? "<disabled>"}`);
   console.log(`  Restricted Keywords: ${config.restrictedKeywords.length} patterns loaded`);
   console.log(`  Verbose Logging: ${config.verbose}`);
 }
 
 // src/lib/policyEngine.ts
-import path2 from "path";
+import path3 from "path";
 function flattenObjectToStrings(obj) {
   const strings = [];
   function traverse(current) {
@@ -246,7 +321,7 @@ function matchesPathSubstrings(pathValue, pathSubstrings) {
   if (!pathValue) {
     return false;
   }
-  const normalized = path2.normalize(pathValue).toLowerCase();
+  const normalized = path3.normalize(pathValue).toLowerCase();
   return pathSubstrings.some((fragment) => normalized.includes(fragment.toLowerCase()));
 }
 function extractCommandName(arguments_) {
@@ -363,19 +438,19 @@ function validateToolArguments(toolName, arguments_) {
 }
 
 // src/lib/auditLogger.ts
-import { promises as fs2 } from "fs";
+import { promises as fs3 } from "fs";
 async function ensureAuditLogExists(auditLogPath) {
   try {
-    await fs2.access(auditLogPath);
+    await fs3.access(auditLogPath);
   } catch {
-    await fs2.writeFile(auditLogPath, "", "utf-8");
+    await fs3.writeFile(auditLogPath, "", "utf-8");
   }
 }
 async function logToolCall(entry, auditLogPath, verbose = false) {
   try {
     await ensureAuditLogExists(auditLogPath);
     const jsonLine = JSON.stringify(entry) + "\n";
-    await fs2.appendFile(auditLogPath, jsonLine, "utf-8");
+    await fs3.appendFile(auditLogPath, jsonLine, "utf-8");
     if (verbose) {
       console.log(
         `[AuditLog] ${entry.toolName} - ${entry.decision}: ${entry.reason}`
@@ -388,25 +463,25 @@ async function logToolCall(entry, auditLogPath, verbose = false) {
 
 // src/lib/approvalStore.ts
 import { randomUUID } from "crypto";
-import { promises as fs3 } from "fs";
-import path3 from "path";
+import { promises as fs4 } from "fs";
+import path4 from "path";
 async function ensureStoreExists(storePath) {
-  await fs3.mkdir(path3.dirname(storePath), { recursive: true });
+  await fs4.mkdir(path4.dirname(storePath), { recursive: true });
   try {
-    await fs3.access(storePath);
+    await fs4.access(storePath);
   } catch {
-    await fs3.writeFile(storePath, "[]", "utf-8");
+    await fs4.writeFile(storePath, "[]", "utf-8");
   }
 }
 async function readStore(storePath) {
   await ensureStoreExists(storePath);
-  const content = await fs3.readFile(storePath, "utf-8");
+  const content = await fs4.readFile(storePath, "utf-8");
   const parsed = JSON.parse(content);
   return Array.isArray(parsed) ? parsed : [];
 }
 async function writeStore(storePath, requests) {
   await ensureStoreExists(storePath);
-  await fs3.writeFile(storePath, JSON.stringify(requests, null, 2), "utf-8");
+  await fs4.writeFile(storePath, JSON.stringify(requests, null, 2), "utf-8");
 }
 async function createApprovalRequest(storePath, input) {
   const requests = await readStore(storePath);
@@ -614,23 +689,23 @@ Approval Request ID: ${approvalRequest.id}`
 }
 
 // src/lib/realTools.ts
-import { promises as fs5 } from "fs";
+import { promises as fs6 } from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
 // src/lib/fsPolicy.ts
-import path4 from "path";
-import { promises as fs4 } from "fs";
+import path5 from "path";
+import { promises as fs5 } from "fs";
 function isPathWithinAllowedRoots(targetPath, allowedRoots) {
-  const resolvedTarget = path4.resolve(targetPath);
+  const resolvedTarget = path5.resolve(targetPath);
   return allowedRoots.some((root) => {
-    const resolvedRoot = path4.resolve(root);
-    const relative = path4.relative(resolvedRoot, resolvedTarget);
-    return relative === "" || !relative.startsWith("..") && !path4.isAbsolute(relative);
+    const resolvedRoot = path5.resolve(root);
+    const relative = path5.relative(resolvedRoot, resolvedTarget);
+    return relative === "" || !relative.startsWith("..") && !path5.isAbsolute(relative);
   });
 }
 function assertPathAllowed(targetPath, allowedRoots) {
-  const resolvedTarget = path4.resolve(targetPath);
+  const resolvedTarget = path5.resolve(targetPath);
   if (!isPathWithinAllowedRoots(resolvedTarget, allowedRoots)) {
     throw new Error(
       `Path is outside allowed roots: ${resolvedTarget}. Allowed roots: ${allowedRoots.join(", ")}`
@@ -639,7 +714,7 @@ function assertPathAllowed(targetPath, allowedRoots) {
   return resolvedTarget;
 }
 async function ensureParentDirectory(targetPath) {
-  await fs4.mkdir(path4.dirname(targetPath), { recursive: true });
+  await fs5.mkdir(path5.dirname(targetPath), { recursive: true });
 }
 
 // src/lib/shellValidators.ts
@@ -791,7 +866,7 @@ async function writeFileSafely(targetPath, content, config) {
       );
     }
     await ensureParentDirectory(resolvedPath);
-    await fs5.writeFile(resolvedPath, content, "utf-8");
+    await fs6.writeFile(resolvedPath, content, "utf-8");
     return ok(`File written: ${resolvedPath}
 Bytes written: ${byteLength}`);
   } catch (error) {
@@ -802,11 +877,11 @@ Bytes written: ${byteLength}`);
 async function readFileSafely(targetPath, config) {
   try {
     const resolvedPath = assertPathAllowed(targetPath, config.allowedPaths);
-    const stats = await fs5.stat(resolvedPath);
+    const stats = await fs6.stat(resolvedPath);
     if (stats.size > config.maxFileReadBytes) {
       throw new Error(`File exceeds MAX_FILE_READ_BYTES (${config.maxFileReadBytes} bytes)`);
     }
-    const content = await fs5.readFile(resolvedPath, "utf-8");
+    const content = await fs6.readFile(resolvedPath, "utf-8");
     return ok(`File read: ${resolvedPath}
 Content:
 ${content}`);
@@ -834,14 +909,22 @@ async function dispatchToolExecution(toolName, args, config) {
     case "shell_command":
       return executeShellCommand(args.command, config);
     case "write_file": {
-      const { path: path5, content } = args;
-      return writeFileSafely(path5, content, config);
+      const { path: path6, content } = args;
+      return writeFileSafely(path6, content, config);
     }
     case "read_file":
       return readFileSafely(args.path, config);
     default:
       return err2(`Unknown tool in approval execution: ${toolName}`);
   }
+}
+function isApprovalExpired(resolvedAt, ttlSeconds) {
+  if (!resolvedAt) {
+    return false;
+  }
+  const resolvedMs = new Date(resolvedAt).getTime();
+  const nowMs = Date.now();
+  return nowMs - resolvedMs > ttlSeconds * 1e3;
 }
 function formatApprovalRequests(status, items) {
   if (items.length === 0) {
@@ -856,8 +939,11 @@ function formatApprovalRequests(status, items) {
       `Created: ${item.createdAt}`,
       item.resolvedAt ? `Resolved: ${item.resolvedAt}` : void 0,
       item.metadata?.approver ? `Approver: ${item.metadata.approver}` : void 0,
+      item.metadata?.authenticated !== void 0 ? `Authenticated: ${item.metadata.authenticated}` : void 0,
       item.metadata?.notes ? `Notes: ${item.metadata.notes}` : void 0,
-      item.metadata?.rejectionReason ? `Rejection Reason: ${item.metadata.rejectionReason}` : void 0
+      item.metadata?.rejectionReason ? `Rejection Reason: ${item.metadata.rejectionReason}` : void 0,
+      item.metadata?.executor ? `Executor: ${item.metadata.executor}` : void 0,
+      item.metadata?.executorAuthenticated !== void 0 ? `Executor Authenticated: ${item.metadata.executorAuthenticated}` : void 0
     ].filter(Boolean).join("\n")
   ).join("\n\n");
 }
@@ -873,7 +959,7 @@ async function main() {
     "shell_command",
     "Execute an allowlisted shell command within configured safe roots",
     {
-      command: z2.string().describe("The shell command to execute")
+      command: z3.string().describe("The shell command to execute")
     },
     async (args) => {
       const wrappedHandler = wrapToolHandler(
@@ -891,8 +977,8 @@ async function main() {
     "write_file",
     "Write content to a file within configured safe roots",
     {
-      path: z2.string().describe("The file path to write to"),
-      content: z2.string().describe("The content to write")
+      path: z3.string().describe("The file path to write to"),
+      content: z3.string().describe("The content to write")
     },
     async (args) => {
       const wrappedHandler = wrapToolHandler(
@@ -901,8 +987,8 @@ async function main() {
           description: "Write content to a file within configured safe roots"
         },
         async () => {
-          const { path: path5, content } = args;
-          return writeFileSafely(path5, content, config);
+          const { path: path6, content } = args;
+          return writeFileSafely(path6, content, config);
         },
         config
       );
@@ -913,7 +999,7 @@ async function main() {
     "read_file",
     "Read content from a file within configured safe roots",
     {
-      path: z2.string().describe("The file path to read from")
+      path: z3.string().describe("The file path to read from")
     },
     async (args) => {
       const wrappedHandler = wrapToolHandler(
@@ -922,8 +1008,8 @@ async function main() {
           description: "Read content from a file within configured safe roots"
         },
         async () => {
-          const { path: path5 } = args;
-          return readFileSafely(path5, config);
+          const { path: path6 } = args;
+          return readFileSafely(path6, config);
         },
         config
       );
@@ -934,7 +1020,7 @@ async function main() {
     "list_approval_requests",
     "List approval requests tracked by Safety Gate",
     {
-      status: z2.enum(["all", "pending", "approved", "rejected", "executed"]).optional()
+      status: z3.enum(["all", "pending", "approved", "rejected", "executed", "expired"]).optional()
     },
     async (args) => {
       const status = args?.status ?? "all";
@@ -949,19 +1035,22 @@ async function main() {
     "approve_request",
     "Approve a pending review request",
     {
-      requestId: z2.string().describe("Approval request ID to approve"),
-      approver: z2.string().optional().describe("Human or system approving the request"),
-      notes: z2.string().optional().describe("Optional approval notes")
+      requestId: z3.string().describe("Approval request ID to approve"),
+      approver: z3.string().optional().describe("Human or system approving the request"),
+      authToken: z3.string().optional().describe("Approver authentication token when auth mode is enabled"),
+      notes: z3.string().optional().describe("Optional approval notes")
     },
     async (args) => {
       try {
         const typedArgs = args;
+        const identity = authenticateApprover(typedArgs.approver, typedArgs.authToken, config);
         const request = await updateApprovalRequestStatus(
           config.approvalStorePath,
           typedArgs.requestId,
           "approved",
           {
-            approver: typedArgs.approver,
+            approver: identity.approver,
+            authenticated: identity.authenticated,
             notes: typedArgs.notes
           }
         );
@@ -975,20 +1064,23 @@ async function main() {
     "reject_request",
     "Reject a pending review request",
     {
-      requestId: z2.string().describe("Approval request ID to reject"),
-      approver: z2.string().optional().describe("Human or system rejecting the request"),
-      rejectionReason: z2.string().optional().describe("Why the request was rejected"),
-      notes: z2.string().optional().describe("Optional rejection notes")
+      requestId: z3.string().describe("Approval request ID to reject"),
+      approver: z3.string().optional().describe("Human or system rejecting the request"),
+      authToken: z3.string().optional().describe("Approver authentication token when auth mode is enabled"),
+      rejectionReason: z3.string().optional().describe("Why the request was rejected"),
+      notes: z3.string().optional().describe("Optional rejection notes")
     },
     async (args) => {
       try {
         const typedArgs = args;
+        const identity = authenticateApprover(typedArgs.approver, typedArgs.authToken, config);
         const request = await updateApprovalRequestStatus(
           config.approvalStorePath,
           typedArgs.requestId,
           "rejected",
           {
-            approver: typedArgs.approver,
+            approver: identity.approver,
+            authenticated: identity.authenticated,
             rejectionReason: typedArgs.rejectionReason,
             notes: typedArgs.notes
           }
@@ -1003,11 +1095,14 @@ async function main() {
     "execute_approved_request",
     "Execute a previously approved request",
     {
-      requestId: z2.string().describe("Approval request ID to execute")
+      requestId: z3.string().describe("Approval request ID to execute"),
+      executor: z3.string().optional().describe("Executor identity for audit trail"),
+      authToken: z3.string().optional().describe("Executor authentication token when auth mode is enabled")
     },
     async (args) => {
       try {
-        const requestId = args.requestId;
+        const typedArgs = args;
+        const requestId = typedArgs.requestId;
         const request = await getApprovalRequest(config.approvalStorePath, requestId);
         if (!request) {
           return err2(`Approval request not found: ${requestId}`);
@@ -1015,11 +1110,26 @@ async function main() {
         if (request.status !== "approved") {
           return err2(`Approval request ${requestId} is not approved (current status: ${request.status})`);
         }
+        const executorIdentity = authenticateApprover(typedArgs.executor, typedArgs.authToken, config);
+        if (isApprovalExpired(request.resolvedAt, config.approvalTtlSeconds)) {
+          await updateApprovalRequestStatus(config.approvalStorePath, requestId, "expired", {
+            approver: request.metadata?.approver,
+            authenticated: request.metadata?.authenticated,
+            notes: request.metadata?.notes,
+            rejectionReason: request.metadata?.rejectionReason,
+            executor: executorIdentity.approver,
+            executorAuthenticated: executorIdentity.authenticated
+          });
+          return err2(`Approval request ${requestId} has expired`);
+        }
         const result = await dispatchToolExecution(request.toolName, request.arguments, config);
         await updateApprovalRequestStatus(config.approvalStorePath, requestId, "executed", {
           approver: request.metadata?.approver,
+          authenticated: request.metadata?.authenticated,
           notes: request.metadata?.notes,
-          rejectionReason: request.metadata?.rejectionReason
+          rejectionReason: request.metadata?.rejectionReason,
+          executor: executorIdentity.approver,
+          executorAuthenticated: executorIdentity.authenticated
         });
         return result;
       } catch (error) {

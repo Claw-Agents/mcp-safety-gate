@@ -20,11 +20,25 @@ async function main(): Promise<void> {
   const repoPackageJson = path.join(repoRoot, 'package.json');
   const readmePath = path.join(repoRoot, 'README.md');
   const policyFile = path.resolve('policies/dev-balanced.policy.json');
+  const approverFile = path.join(runtimeRoot, 'approvers.json');
+  const approvalStorePath = path.join(runtimeRoot, 'approval-requests.json');
 
   await fs.mkdir(repoRoot, { recursive: true });
   await fs.mkdir(runtimeRoot, { recursive: true });
   await fs.writeFile(readmePath, '# Demo Repo\n', 'utf-8');
   await fs.writeFile(repoPackageJson, '{"name":"demo"}\n', 'utf-8');
+  await fs.writeFile(
+    approverFile,
+    JSON.stringify(
+      {
+        version: 1,
+        approvers: [{ id: 'liv', tokenEnv: 'APPROVER_TOKEN_LIV' }],
+      },
+      null,
+      2
+    ),
+    'utf-8'
+  );
 
   const transport = new StdioClientTransport({
     command: 'node',
@@ -35,7 +49,11 @@ async function main(): Promise<void> {
       ALLOWED_PATHS: repoRoot,
       POLICY_FILE: policyFile,
       AUDIT_LOG_PATH: path.join(runtimeRoot, 'audit-log.jsonl'),
-      APPROVAL_STORE_PATH: path.join(runtimeRoot, 'approval-requests.json'),
+      APPROVAL_STORE_PATH: approvalStorePath,
+      APPROVAL_TTL_SECONDS: '3600',
+      APPROVER_AUTH_MODE: 'token',
+      APPROVER_AUTH_FILE: approverFile,
+      APPROVER_TOKEN_LIV: 'integration-secret',
     },
   });
 
@@ -89,32 +107,107 @@ async function main(): Promise<void> {
     });
     assert.match(textFromResult(pendingList), new RegExp(String(requestId)));
 
+    const badApproveResult = await client.callTool({
+      name: 'approve_request',
+      arguments: {
+        requestId,
+        approver: 'liv',
+        authToken: 'wrong-token',
+      },
+    });
+    assert.equal(badApproveResult.isError, true);
+    assert.match(textFromResult(badApproveResult), /Invalid auth token/);
+
     const approveResult = await client.callTool({
       name: 'approve_request',
       arguments: {
         requestId,
-        approver: 'integration-harness',
+        approver: 'liv',
+        authToken: 'integration-secret',
         notes: 'approved during end-to-end test',
       },
     });
     assert.equal(approveResult.isError, false);
 
+    const badExecuteResult = await client.callTool({
+      name: 'execute_approved_request',
+      arguments: { requestId, executor: 'liv', authToken: 'wrong-token' },
+    });
+    assert.equal(badExecuteResult.isError, true);
+    assert.match(textFromResult(badExecuteResult), /Invalid auth token/);
+
     const executeResult = await client.callTool({
       name: 'execute_approved_request',
-      arguments: { requestId },
+      arguments: { requestId, executor: 'liv', authToken: 'integration-secret' },
     });
     assert.equal(executeResult.isError, false);
 
     const updatedPackageJson = await fs.readFile(repoPackageJson, 'utf-8');
     assert.match(updatedPackageJson, /1.0.0/);
 
+    const replayResult = await client.callTool({
+      name: 'execute_approved_request',
+      arguments: { requestId },
+    });
+    assert.equal(replayResult.isError, true);
+    assert.match(textFromResult(replayResult), /is not approved/);
+
     const executedList = await client.callTool({
       name: 'list_approval_requests',
       arguments: { status: 'executed' },
     });
     const executedText = textFromResult(executedList);
-    assert.match(executedText, /integration-harness/);
+    assert.match(executedText, /Approver: liv/);
+    assert.match(executedText, /Authenticated: true/);
+    assert.match(executedText, /Executor: liv/);
+    assert.match(executedText, /Executor Authenticated: true/);
     assert.match(executedText, /approved during end-to-end test/);
+
+    const expiringReviewResult = await client.callTool({
+      name: 'write_file',
+      arguments: {
+        path: repoPackageJson,
+        content: '{"name":"demo","version":"2.0.0"}\n',
+      },
+    });
+    const expiringRequestId = textFromResult(expiringReviewResult).match(
+      /Approval Request ID: ([a-f0-9-]+)/i
+    )?.[1];
+    assert.ok(expiringRequestId, 'Expected expiring approval request ID');
+
+    const expiringApproveResult = await client.callTool({
+      name: 'approve_request',
+      arguments: {
+        requestId: expiringRequestId,
+        approver: 'liv',
+        authToken: 'integration-secret',
+        notes: 'will be forced to expire',
+      },
+    });
+    assert.equal(expiringApproveResult.isError, false);
+
+    const requests = JSON.parse(await fs.readFile(approvalStorePath, 'utf-8')) as any[];
+    const expiringRequest = requests.find(entry => entry.id === expiringRequestId);
+    assert.ok(expiringRequest, 'Expected approved request in approval store');
+    expiringRequest.resolvedAt = new Date(Date.now() - 7200 * 1000).toISOString();
+    await fs.writeFile(approvalStorePath, JSON.stringify(requests, null, 2), 'utf-8');
+
+    const expiredExecuteResult = await client.callTool({
+      name: 'execute_approved_request',
+      arguments: {
+        requestId: expiringRequestId,
+        executor: 'liv',
+        authToken: 'integration-secret',
+      },
+    });
+    assert.equal(expiredExecuteResult.isError, true);
+    assert.match(textFromResult(expiredExecuteResult), /has expired/);
+
+    const expiredList = await client.callTool({
+      name: 'list_approval_requests',
+      arguments: { status: 'expired' },
+    });
+    assert.match(textFromResult(expiredList), new RegExp(String(expiringRequestId)));
 
     console.log('Integration harness passed.');
     console.log(`Temp root: ${tempRoot}`);

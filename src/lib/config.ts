@@ -6,6 +6,7 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import { PolicyRule, SafetyGateConfig, SafetyGatePolicy } from '../types/index.js';
 import { validatePolicy } from './policySchema.js';
+import { loadApproverAuth } from './approverAuth.js';
 
 // Hardcoded restricted keywords list
 const RESTRICTED_KEYWORDS = [
@@ -164,6 +165,11 @@ export async function loadConfig(): Promise<SafetyGateConfig> {
   const policyFilePath = process.env.POLICY_FILE
     ? path.resolve(process.env.POLICY_FILE)
     : undefined;
+  const approverAuthMode =
+    process.env.APPROVER_AUTH_MODE === 'token' ? 'token' : 'off';
+  const approverAuthFilePath = process.env.APPROVER_AUTH_FILE
+    ? path.resolve(process.env.APPROVER_AUTH_FILE)
+    : undefined;
 
   return {
     dryRun,
@@ -178,6 +184,10 @@ export async function loadConfig(): Promise<SafetyGateConfig> {
     policy: await loadPolicy(policyFilePath),
     policyFilePath,
     approvalStorePath: path.resolve(process.env.APPROVAL_STORE_PATH || './approval-requests.json'),
+    approvalTtlSeconds: parseNumberEnv(process.env.APPROVAL_TTL_SECONDS, 3600),
+    approverAuthMode,
+    approverAuthFilePath,
+    approverAuth: await loadApproverAuth(approverAuthMode, approverAuthFilePath),
   };
 }
 
@@ -196,6 +206,9 @@ export function logConfigOnStartup(config: SafetyGateConfig): void {
   console.log(`  Policy File: ${config.policyFilePath ?? '<built-in default>'}`);
   console.log(`  Policy Rules: ${config.policy.rules.length}`);
   console.log(`  Approval Store: ${config.approvalStorePath}`);
+  console.log(`  Approval TTL Seconds: ${config.approvalTtlSeconds}`);
+  console.log(`  Approver Auth Mode: ${config.approverAuthMode}`);
+  console.log(`  Approver Auth File: ${config.approverAuthFilePath ?? '<disabled>'}`);
   console.log(`  Restricted Keywords: ${config.restrictedKeywords.length} patterns loaded`);
   console.log(`  Verbose Logging: ${config.verbose}`);
 }

@@ -65,6 +65,9 @@ Configuration is managed via environment variables:
 | `SHELL_COMMAND_TIMEOUT_MS` | Timeout for allowlisted shell commands | `5000` | `SHELL_COMMAND_TIMEOUT_MS=2000` |
 | `POLICY_FILE` | Optional path to a JSON policy file overriding the built-in default policy. Invalid files fail fast at startup. | built-in default policy | `POLICY_FILE=./policy/safety-gate.policy.json` |
 | `APPROVAL_STORE_PATH` | JSON file used to persist approval requests | `./approval-requests.json` | `APPROVAL_STORE_PATH=./data/approval-requests.json` |
+| `APPROVAL_TTL_SECONDS` | How long an approved request remains executable before expiring | `3600` | `APPROVAL_TTL_SECONDS=900` |
+| `APPROVER_AUTH_MODE` | Approver identity mode: `off` or `token` | `off` | `APPROVER_AUTH_MODE=token` |
+| `APPROVER_AUTH_FILE` | JSON file describing valid approvers and which env vars contain their tokens | disabled | `APPROVER_AUTH_FILE=./approvers/example.approvers.json` |
 
 ### Example: Starting in Dry-Run Mode
 
@@ -530,7 +533,9 @@ When a rule returns `review`, Safety Gate now:
 2. returns `Review Required` plus that request ID
 3. waits for an operator to approve or reject it
 4. stores optional approval metadata (`approver`, `notes`, `rejectionReason`)
-5. allows later execution via `execute_approved_request`
+5. can require authenticated approver identity when `APPROVER_AUTH_MODE=token`
+6. expires approvals after `APPROVAL_TTL_SECONDS`
+7. allows a single later execution via `execute_approved_request`
 
 Typical flow:
 
@@ -538,6 +543,53 @@ Typical flow:
 2. `list_approval_requests` shows the pending request
 3. `approve_request` or `reject_request` resolves it
 4. `execute_approved_request` runs the approved action
+
+## Approver Identity / Auth Model
+
+Safety Gate now supports an optional token-based approver identity model.
+
+### Mode
+
+- `APPROVER_AUTH_MODE=off` — approval metadata is accepted but not authenticated
+- `APPROVER_AUTH_MODE=token` — approval and execution actions require authenticated identities:
+  - `approve_request` / `reject_request` require `approver` + `authToken`
+  - `execute_approved_request` requires `executor` + `authToken`
+
+### Approver config file
+
+Example:
+
+```json
+{
+  "version": 1,
+  "approvers": [
+    { "id": "liv", "tokenEnv": "APPROVER_TOKEN_LIV" },
+    { "id": "boris", "tokenEnv": "APPROVER_TOKEN_BORIS" }
+  ]
+}
+```
+
+Then provide the actual secrets through environment variables, for example:
+
+```bash
+export APPROVER_AUTH_MODE=token
+export APPROVER_AUTH_FILE=./approvers/example.approvers.json
+export APPROVER_TOKEN_LIV="replace-me"
+export APPROVER_TOKEN_BORIS="replace-me-too"
+```
+
+This keeps approver identity configuration in a file while keeping the actual secrets out of source control.
+
+## Approval Expiry / Replay Protection
+
+Approved requests are now intentionally short-lived and single-use:
+
+- `APPROVAL_TTL_SECONDS` controls how long an approval remains valid
+- if executor auth is enabled, `execute_approved_request` also requires authenticated identity
+- once executed, the request moves to `executed` and cannot be replayed
+- if execution is attempted after the TTL window, the request moves to `expired`
+
+This prevents stale approvals from being used much later and blocks repeat execution of the same approved action.
 
 ## Example Policy Files
 
@@ -556,6 +608,12 @@ The `policies/` directory includes ready-to-use examples:
   - disables shell execution entirely
   - reviews high-impact config changes
   - tightly restricts sensitive paths
+
+The `approvers/` directory also includes:
+
+- `approvers/example.approvers.json`
+  - sample token-based approver identity config
+  - maps approver ids to environment variable names that hold their secrets
 
 Use one by setting:
 

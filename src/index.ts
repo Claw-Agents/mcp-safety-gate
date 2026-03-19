@@ -21,6 +21,7 @@ import {
   listApprovalRequests,
   updateApprovalRequestStatus,
 } from './lib/approvalStore.js';
+import { authenticateApprover } from './lib/approverAuth.js';
 import { ApprovalStatus, SafetyGateConfig } from './types/index.js';
 
 function ok(text: string): CallToolResult {
@@ -56,6 +57,16 @@ async function dispatchToolExecution(
   }
 }
 
+function isApprovalExpired(resolvedAt: string | undefined, ttlSeconds: number): boolean {
+  if (!resolvedAt) {
+    return false;
+  }
+
+  const resolvedMs = new Date(resolvedAt).getTime();
+  const nowMs = Date.now();
+  return nowMs - resolvedMs > ttlSeconds * 1000;
+}
+
 function formatApprovalRequests(
   status: ApprovalStatus | 'all',
   items: Awaited<ReturnType<typeof listApprovalRequests>>
@@ -74,9 +85,16 @@ function formatApprovalRequests(
         `Created: ${item.createdAt}`,
         item.resolvedAt ? `Resolved: ${item.resolvedAt}` : undefined,
         item.metadata?.approver ? `Approver: ${item.metadata.approver}` : undefined,
+        item.metadata?.authenticated !== undefined
+          ? `Authenticated: ${item.metadata.authenticated}`
+          : undefined,
         item.metadata?.notes ? `Notes: ${item.metadata.notes}` : undefined,
         item.metadata?.rejectionReason
           ? `Rejection Reason: ${item.metadata.rejectionReason}`
+          : undefined,
+        item.metadata?.executor ? `Executor: ${item.metadata.executor}` : undefined,
+        item.metadata?.executorAuthenticated !== undefined
+          ? `Executor Authenticated: ${item.metadata.executorAuthenticated}`
           : undefined,
       ]
         .filter(Boolean)
@@ -173,7 +191,7 @@ async function main(): Promise<void> {
     'list_approval_requests',
     'List approval requests tracked by Safety Gate',
     {
-      status: z.enum(['all', 'pending', 'approved', 'rejected', 'executed']).optional(),
+      status: z.enum(['all', 'pending', 'approved', 'rejected', 'executed', 'expired']).optional(),
     } as any,
     async (args: any) => {
       const status = (args?.status ?? 'all') as ApprovalStatus | 'all';
@@ -192,17 +210,25 @@ async function main(): Promise<void> {
     {
       requestId: z.string().describe('Approval request ID to approve'),
       approver: z.string().optional().describe('Human or system approving the request'),
+      authToken: z.string().optional().describe('Approver authentication token when auth mode is enabled'),
       notes: z.string().optional().describe('Optional approval notes'),
     } as any,
     async (args: any) => {
       try {
-        const typedArgs = args as { requestId: string; approver?: string; notes?: string };
+        const typedArgs = args as {
+          requestId: string;
+          approver?: string;
+          authToken?: string;
+          notes?: string;
+        };
+        const identity = authenticateApprover(typedArgs.approver, typedArgs.authToken, config);
         const request = await updateApprovalRequestStatus(
           config.approvalStorePath,
           typedArgs.requestId,
           'approved',
           {
-            approver: typedArgs.approver,
+            approver: identity.approver,
+            authenticated: identity.authenticated,
             notes: typedArgs.notes,
           }
         );
@@ -220,6 +246,7 @@ async function main(): Promise<void> {
     {
       requestId: z.string().describe('Approval request ID to reject'),
       approver: z.string().optional().describe('Human or system rejecting the request'),
+      authToken: z.string().optional().describe('Approver authentication token when auth mode is enabled'),
       rejectionReason: z.string().optional().describe('Why the request was rejected'),
       notes: z.string().optional().describe('Optional rejection notes'),
     } as any,
@@ -228,15 +255,18 @@ async function main(): Promise<void> {
         const typedArgs = args as {
           requestId: string;
           approver?: string;
+          authToken?: string;
           rejectionReason?: string;
           notes?: string;
         };
+        const identity = authenticateApprover(typedArgs.approver, typedArgs.authToken, config);
         const request = await updateApprovalRequestStatus(
           config.approvalStorePath,
           typedArgs.requestId,
           'rejected',
           {
-            approver: typedArgs.approver,
+            approver: identity.approver,
+            authenticated: identity.authenticated,
             rejectionReason: typedArgs.rejectionReason,
             notes: typedArgs.notes,
           }
@@ -254,10 +284,17 @@ async function main(): Promise<void> {
     'Execute a previously approved request',
     {
       requestId: z.string().describe('Approval request ID to execute'),
+      executor: z.string().optional().describe('Executor identity for audit trail'),
+      authToken: z.string().optional().describe('Executor authentication token when auth mode is enabled'),
     } as any,
     async (args: any) => {
       try {
-        const requestId = (args as { requestId: string }).requestId;
+        const typedArgs = args as {
+          requestId: string;
+          executor?: string;
+          authToken?: string;
+        };
+        const requestId = typedArgs.requestId;
         const request = await getApprovalRequest(config.approvalStorePath, requestId);
 
         if (!request) {
@@ -268,11 +305,28 @@ async function main(): Promise<void> {
           return err(`Approval request ${requestId} is not approved (current status: ${request.status})`);
         }
 
+        const executorIdentity = authenticateApprover(typedArgs.executor, typedArgs.authToken, config);
+
+        if (isApprovalExpired(request.resolvedAt, config.approvalTtlSeconds)) {
+          await updateApprovalRequestStatus(config.approvalStorePath, requestId, 'expired', {
+            approver: request.metadata?.approver,
+            authenticated: request.metadata?.authenticated,
+            notes: request.metadata?.notes,
+            rejectionReason: request.metadata?.rejectionReason,
+            executor: executorIdentity.approver,
+            executorAuthenticated: executorIdentity.authenticated,
+          });
+          return err(`Approval request ${requestId} has expired`);
+        }
+
         const result = await dispatchToolExecution(request.toolName, request.arguments, config);
         await updateApprovalRequestStatus(config.approvalStorePath, requestId, 'executed', {
           approver: request.metadata?.approver,
+          authenticated: request.metadata?.authenticated,
           notes: request.metadata?.notes,
           rejectionReason: request.metadata?.rejectionReason,
+          executor: executorIdentity.approver,
+          executorAuthenticated: executorIdentity.authenticated,
         });
         return result;
       } catch (error) {

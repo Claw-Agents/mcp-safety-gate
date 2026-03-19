@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "approvers": [
+    {
+      "id": "liv",
+      "tokenEnv": "APPROVER_TOKEN_LIV"
+    },
+    {
+      "id": "boris",
+      "tokenEnv": "APPROVER_TOKEN_BORIS"
+    }
+  ]
+}

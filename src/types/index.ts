@@ -3,7 +3,8 @@
  */
 
 export type PolicyEffect = 'allow' | 'deny' | 'review';
-export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'executed';
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'executed' | 'expired';
+export type ApproverAuthMode = 'off' | 'token';
 
 export interface PolicyRule {
   id: string;
@@ -30,10 +31,23 @@ export interface PolicyDecision {
   ruleId?: string;
 }
 
+export interface ApproverConfigEntry {
+  id: string;
+  tokenEnv: string;
+}
+
+export interface ApproverAuthConfig {
+  version: number;
+  approvers: ApproverConfigEntry[];
+}
+
 export interface ApprovalRequestMetadata {
   approver?: string;
   notes?: string;
   rejectionReason?: string;
+  authenticated?: boolean;
+  executor?: string;
+  executorAuthenticated?: boolean;
 }
 
 export interface ApprovalRequest {
@@ -80,4 +94,8 @@ export interface SafetyGateConfig {
   policy: SafetyGatePolicy;
   policyFilePath?: string;
   approvalStorePath: string;
+  approvalTtlSeconds: number;
+  approverAuthMode: ApproverAuthMode;
+  approverAuthFilePath?: string;
+  approverAuth?: ApproverAuthConfig;
 }
