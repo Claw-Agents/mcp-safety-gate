@@ -52,6 +52,7 @@ export ALLOWED_PATHS=/Users/you/projects/demo-repo
 export POLICY_FILE=/absolute/path/to/mcp-safety-gate/policies/dev-balanced.policy.json
 export AUDIT_LOG_PATH=/absolute/path/to/mcp-safety-gate/runtime/audit-log.jsonl
 export APPROVAL_STORE_PATH=/absolute/path/to/mcp-safety-gate/runtime/approval-requests.json
+export APPROVAL_TTL_SECONDS=3600
 ```
 
 If you want authenticated approvals, also set:
@@ -171,6 +172,8 @@ If approver auth is enabled, `approve_request` / `reject_request` must include:
 Expected result:
 - request moves from `pending` → `approved` → `executed`
 - metadata such as `approver`, `authenticated`, and `notes` persists
+- a second execution attempt is rejected
+- if execution happens after the TTL window, the request becomes `expired`
 
 ## 7. Recommended starting posture
 
@@ -231,6 +234,8 @@ What it verifies:
 - invalid approver tokens are rejected when auth mode is enabled
 - approval metadata can be attached
 - approved requests can be executed successfully
+- replay attempts are rejected
+- expired approvals are marked `expired` and blocked
 
 ## 10. Suggested next integration work
 

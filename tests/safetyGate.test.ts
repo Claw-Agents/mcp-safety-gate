@@ -29,6 +29,7 @@ async function withTempDir(run: (dir: string, config: SafetyGateConfig) => Promi
     maxFileWriteBytes: 1024 * 1024,
     shellCommandTimeoutMs: 3_000,
     approvalStorePath: path.join(dir, 'approval-requests.json'),
+    approvalTtlSeconds: 3600,
     approverAuthMode: 'off',
     approverAuthFilePath: undefined,
     approverAuth: undefined,
@@ -320,6 +321,7 @@ test('approver authentication succeeds with configured token and fails otherwise
     maxFileWriteBytes: 1024,
     shellCommandTimeoutMs: 1000,
     approvalStorePath: './approval.json',
+    approvalTtlSeconds: 3600,
     approverAuthMode: 'token',
     approverAuthFilePath: './approvers.json',
     approverAuth: {

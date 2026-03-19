@@ -256,6 +256,7 @@ async function loadConfig() {
     policy: await loadPolicy(policyFilePath),
     policyFilePath,
     approvalStorePath: path2.resolve(process.env.APPROVAL_STORE_PATH || "./approval-requests.json"),
+    approvalTtlSeconds: parseNumberEnv(process.env.APPROVAL_TTL_SECONDS, 3600),
     approverAuthMode,
     approverAuthFilePath,
     approverAuth: await loadApproverAuth(approverAuthMode, approverAuthFilePath)
@@ -273,6 +274,7 @@ function logConfigOnStartup(config) {
   console.log(`  Policy File: ${config.policyFilePath ?? "<built-in default>"}`);
   console.log(`  Policy Rules: ${config.policy.rules.length}`);
   console.log(`  Approval Store: ${config.approvalStorePath}`);
+  console.log(`  Approval TTL Seconds: ${config.approvalTtlSeconds}`);
   console.log(`  Approver Auth Mode: ${config.approverAuthMode}`);
   console.log(`  Approver Auth File: ${config.approverAuthFilePath ?? "<disabled>"}`);
   console.log(`  Restricted Keywords: ${config.restrictedKeywords.length} patterns loaded`);
@@ -916,6 +918,14 @@ async function dispatchToolExecution(toolName, args, config) {
       return err2(`Unknown tool in approval execution: ${toolName}`);
   }
 }
+function isApprovalExpired(resolvedAt, ttlSeconds) {
+  if (!resolvedAt) {
+    return false;
+  }
+  const resolvedMs = new Date(resolvedAt).getTime();
+  const nowMs = Date.now();
+  return nowMs - resolvedMs > ttlSeconds * 1e3;
+}
 function formatApprovalRequests(status, items) {
   if (items.length === 0) {
     return `No approval requests found for status: ${status}`;
@@ -931,7 +941,8 @@ function formatApprovalRequests(status, items) {
       item.metadata?.approver ? `Approver: ${item.metadata.approver}` : void 0,
       item.metadata?.authenticated !== void 0 ? `Authenticated: ${item.metadata.authenticated}` : void 0,
       item.metadata?.notes ? `Notes: ${item.metadata.notes}` : void 0,
-      item.metadata?.rejectionReason ? `Rejection Reason: ${item.metadata.rejectionReason}` : void 0
+      item.metadata?.rejectionReason ? `Rejection Reason: ${item.metadata.rejectionReason}` : void 0,
+      item.metadata?.executor ? `Executor: ${item.metadata.executor}` : void 0
     ].filter(Boolean).join("\n")
   ).join("\n\n");
 }
@@ -1008,7 +1019,7 @@ async function main() {
     "list_approval_requests",
     "List approval requests tracked by Safety Gate",
     {
-      status: z3.enum(["all", "pending", "approved", "rejected", "executed"]).optional()
+      status: z3.enum(["all", "pending", "approved", "rejected", "executed", "expired"]).optional()
     },
     async (args) => {
       const status = args?.status ?? "all";
@@ -1083,11 +1094,13 @@ async function main() {
     "execute_approved_request",
     "Execute a previously approved request",
     {
-      requestId: z3.string().describe("Approval request ID to execute")
+      requestId: z3.string().describe("Approval request ID to execute"),
+      executor: z3.string().optional().describe("Optional executor identity for audit trail")
     },
     async (args) => {
       try {
-        const requestId = args.requestId;
+        const typedArgs = args;
+        const requestId = typedArgs.requestId;
         const request = await getApprovalRequest(config.approvalStorePath, requestId);
         if (!request) {
           return err2(`Approval request not found: ${requestId}`);
@@ -1095,11 +1108,23 @@ async function main() {
         if (request.status !== "approved") {
           return err2(`Approval request ${requestId} is not approved (current status: ${request.status})`);
         }
+        if (isApprovalExpired(request.resolvedAt, config.approvalTtlSeconds)) {
+          await updateApprovalRequestStatus(config.approvalStorePath, requestId, "expired", {
+            approver: request.metadata?.approver,
+            authenticated: request.metadata?.authenticated,
+            notes: request.metadata?.notes,
+            rejectionReason: request.metadata?.rejectionReason,
+            executor: typedArgs.executor
+          });
+          return err2(`Approval request ${requestId} has expired`);
+        }
         const result = await dispatchToolExecution(request.toolName, request.arguments, config);
         await updateApprovalRequestStatus(config.approvalStorePath, requestId, "executed", {
           approver: request.metadata?.approver,
+          authenticated: request.metadata?.authenticated,
           notes: request.metadata?.notes,
-          rejectionReason: request.metadata?.rejectionReason
+          rejectionReason: request.metadata?.rejectionReason,
+          executor: typedArgs.executor
         });
         return result;
       } catch (error) {

@@ -65,6 +65,7 @@ Configuration is managed via environment variables:
 | `SHELL_COMMAND_TIMEOUT_MS` | Timeout for allowlisted shell commands | `5000` | `SHELL_COMMAND_TIMEOUT_MS=2000` |
 | `POLICY_FILE` | Optional path to a JSON policy file overriding the built-in default policy. Invalid files fail fast at startup. | built-in default policy | `POLICY_FILE=./policy/safety-gate.policy.json` |
 | `APPROVAL_STORE_PATH` | JSON file used to persist approval requests | `./approval-requests.json` | `APPROVAL_STORE_PATH=./data/approval-requests.json` |
+| `APPROVAL_TTL_SECONDS` | How long an approved request remains executable before expiring | `3600` | `APPROVAL_TTL_SECONDS=900` |
 | `APPROVER_AUTH_MODE` | Approver identity mode: `off` or `token` | `off` | `APPROVER_AUTH_MODE=token` |
 | `APPROVER_AUTH_FILE` | JSON file describing valid approvers and which env vars contain their tokens | disabled | `APPROVER_AUTH_FILE=./approvers/example.approvers.json` |
 
@@ -533,7 +534,8 @@ When a rule returns `review`, Safety Gate now:
 3. waits for an operator to approve or reject it
 4. stores optional approval metadata (`approver`, `notes`, `rejectionReason`)
 5. can require authenticated approver identity when `APPROVER_AUTH_MODE=token`
-6. allows later execution via `execute_approved_request`
+6. expires approvals after `APPROVAL_TTL_SECONDS`
+7. allows a single later execution via `execute_approved_request`
 
 Typical flow:
 
@@ -577,6 +579,16 @@ export APPROVER_TOKEN_BORIS="replace-me-too"
 ```
 
 This keeps approver identity configuration in a file while keeping the actual secrets out of source control.
+
+## Approval Expiry / Replay Protection
+
+Approved requests are now intentionally short-lived and single-use:
+
+- `APPROVAL_TTL_SECONDS` controls how long an approval remains valid
+- once executed, the request moves to `executed` and cannot be replayed
+- if execution is attempted after the TTL window, the request moves to `expired`
+
+This prevents stale approvals from being used much later and blocks repeat execution of the same approved action.
 
 ## Example Policy Files
 
