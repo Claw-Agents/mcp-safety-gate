@@ -5,6 +5,8 @@ A TypeScript-based Model Context Protocol (MCP) server that acts as a security m
 ## Features
 
 - **🔒 Instruction Filtering**: Validates tool arguments against a list of restricted keywords (e.g., `rm`, `sudo`, `.env`, etc.)
+- **📁 Path Sandboxing**: Restricts file reads and writes to configured safe roots
+- **🖥️ Safe Shell Execution**: Executes only allowlisted shell commands, rejects shell metacharacters, and validates path-like arguments
 - **🏃 Dry-Run Mode**: Optional simulation mode that logs intended actions without executing them
 - **📝 Audit Logging**: Automatically logs all intercepted tool calls to a local JSON Lines file with timestamps and metadata
 - **📋 MCP Compliant**: Follows the official Model Context Protocol specification using `@modelcontextprotocol/sdk`
@@ -42,6 +44,11 @@ Configuration is managed via environment variables:
 | `DRY_RUN` | Enable simulation mode (no actual execution) | `false` | `DRY_RUN=true` |
 | `AUDIT_LOG_PATH` | Path to the audit log file | `./audit_log.json` | `AUDIT_LOG_PATH=/var/log/safety-gate.log` |
 | `VERBOSE` | Enable verbose logging to console | `false` | `VERBOSE=true` |
+| `ALLOWED_PATHS` | Comma-separated safe root directories for file access and path-like shell args | current working directory | `ALLOWED_PATHS=/workspace,/tmp/scratch` |
+| `SHELL_ALLOWED_COMMANDS` | Comma-separated allowlist for shell execution | `pwd,ls,cat,head,tail,wc,find,grep,which,echo` | `SHELL_ALLOWED_COMMANDS=pwd,ls,cat` |
+| `MAX_FILE_READ_BYTES` | Maximum bytes returned by `read_file` or shell output buffer | `1048576` | `MAX_FILE_READ_BYTES=262144` |
+| `MAX_FILE_WRITE_BYTES` | Maximum bytes accepted by `write_file` | `262144` | `MAX_FILE_WRITE_BYTES=65536` |
+| `SHELL_COMMAND_TIMEOUT_MS` | Timeout for allowlisted shell commands | `5000` | `SHELL_COMMAND_TIMEOUT_MS=2000` |
 
 ### Example: Starting in Dry-Run Mode
 
@@ -94,7 +101,9 @@ The server provides three intercepted tools:
 
 ### 1. `shell_command`
 
-Execute a shell command with security checks.
+Execute an allowlisted shell command with security checks.
+
+Safety Gate rejects shell metacharacters such as `&&`, `|`, `;`, redirections, command substitution, and backslashes. It also rejects commands that are not in the configured allowlist.
 
 **Input:**
 ```json
@@ -106,7 +115,7 @@ Execute a shell command with security checks.
 **Response (Allowed):**
 ```json
 {
-  "content": [{"type": "text", "text": "[MOCK] Shell command executed: ls -la /home\n..."}],
+  "content": [{"type": "text", "text": "Command: ls -la ./docs\nExit: 0\nSTDOUT:\n...\nSTDERR: <empty>"}],
   "isError": false
 }
 ```
@@ -123,6 +132,8 @@ Execute a shell command with security checks.
 
 Write content to a file with security checks.
 
+Writes are only allowed inside `ALLOWED_PATHS`, and parent directories are created automatically when needed.
+
 **Input:**
 ```json
 {
@@ -133,7 +144,7 @@ Write content to a file with security checks.
 
 ### 3. `read_file`
 
-Read content from a file (generally allowed by default).
+Read content from a file with path sandboxing and size limits.
 
 **Input:**
 ```json
@@ -427,10 +438,25 @@ chmod 666 ./audit_log.json
 3. Review tool arguments for case-insensitive matches
 4. Adjust restricted keywords list if needed
 
+## Testing
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+Current test coverage includes:
+- safe file read/write inside allowed roots
+- rejection of out-of-bounds paths
+- allowlisted shell execution
+- rejection of disallowed commands and shell metacharacters
+
 ## Future Enhancements
 
 - [ ] Configurable restricted keywords via JSON config file
 - [ ] Per-tool whitelisting rules
+- [ ] Approval workflow for risky but potentially valid actions
 - [ ] Rate limiting & quota enforcement
 - [ ] TLS/authentication for remote server mode
 - [ ] Database-backed audit logging

@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 // src/lib/config.ts
+import path from "path";
 var RESTRICTED_KEYWORDS = [
   // System destructive operations
   "rm",
@@ -44,21 +45,60 @@ var RESTRICTED_KEYWORDS = [
   "clear history",
   "history -c"
 ];
+var DEFAULT_SHELL_ALLOWED_COMMANDS = [
+  "pwd",
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "find",
+  "grep",
+  "which",
+  "echo"
+];
+function parseListEnv(value, fallback) {
+  if (!value || value.trim().length === 0) {
+    return fallback;
+  }
+  return value.split(",").map((part) => part.trim()).filter(Boolean);
+}
+function parseNumberEnv(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 function loadConfig() {
   const dryRun = process.env.DRY_RUN === "true";
   const verbose = process.env.VERBOSE === "true";
   const auditLogPath = process.env.AUDIT_LOG_PATH || "./audit_log.json";
+  const allowedPaths = parseListEnv(process.env.ALLOWED_PATHS, [process.cwd()]).map(
+    (entry) => path.resolve(entry)
+  );
+  const shellAllowedCommands = parseListEnv(
+    process.env.SHELL_ALLOWED_COMMANDS,
+    DEFAULT_SHELL_ALLOWED_COMMANDS
+  ).map((command) => command.toLowerCase());
   return {
     dryRun,
     restrictedKeywords: RESTRICTED_KEYWORDS,
     auditLogPath,
-    verbose
+    verbose,
+    allowedPaths,
+    shellAllowedCommands,
+    maxFileReadBytes: parseNumberEnv(process.env.MAX_FILE_READ_BYTES, 1024 * 1024),
+    maxFileWriteBytes: parseNumberEnv(process.env.MAX_FILE_WRITE_BYTES, 256 * 1024),
+    shellCommandTimeoutMs: parseNumberEnv(process.env.SHELL_COMMAND_TIMEOUT_MS, 5e3)
   };
 }
 function logConfigOnStartup(config) {
   console.log("[Config] Safety Gate Configuration:");
   console.log(`  Dry-Run Mode: ${config.dryRun}`);
   console.log(`  Audit Log Path: ${config.auditLogPath}`);
+  console.log(`  Allowed Paths: ${config.allowedPaths.join(", ")}`);
+  console.log(`  Shell Allowed Commands: ${config.shellAllowedCommands.join(", ")}`);
+  console.log(`  Max File Read Bytes: ${config.maxFileReadBytes}`);
+  console.log(`  Max File Write Bytes: ${config.maxFileWriteBytes}`);
+  console.log(`  Shell Command Timeout (ms): ${config.shellCommandTimeoutMs}`);
   console.log(`  Restricted Keywords: ${config.restrictedKeywords.length} patterns loaded`);
   console.log(`  Verbose Logging: ${config.verbose}`);
 }
@@ -317,6 +357,142 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
   };
 }
 
+// src/lib/realTools.ts
+import { promises as fs3 } from "fs";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+// src/lib/fsPolicy.ts
+import path2 from "path";
+import { promises as fs2 } from "fs";
+function isPathWithinAllowedRoots(targetPath, allowedRoots) {
+  const resolvedTarget = path2.resolve(targetPath);
+  return allowedRoots.some((root) => {
+    const resolvedRoot = path2.resolve(root);
+    const relative = path2.relative(resolvedRoot, resolvedTarget);
+    return relative === "" || !relative.startsWith("..") && !path2.isAbsolute(relative);
+  });
+}
+function assertPathAllowed(targetPath, allowedRoots) {
+  const resolvedTarget = path2.resolve(targetPath);
+  if (!isPathWithinAllowedRoots(resolvedTarget, allowedRoots)) {
+    throw new Error(
+      `Path is outside allowed roots: ${resolvedTarget}. Allowed roots: ${allowedRoots.join(", ")}`
+    );
+  }
+  return resolvedTarget;
+}
+async function ensureParentDirectory(targetPath) {
+  await fs2.mkdir(path2.dirname(targetPath), { recursive: true });
+}
+
+// src/lib/realTools.ts
+var execFileAsync = promisify(execFile);
+var SHELL_META_PATTERN = /[|&;><`$\\]/;
+function ok(text) {
+  return {
+    content: [{ type: "text", text }],
+    isError: false
+  };
+}
+function err(text) {
+  return {
+    content: [{ type: "text", text }],
+    isError: true
+  };
+}
+function tokenizeCommand(command) {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    throw new Error("Command cannot be empty");
+  }
+  if (SHELL_META_PATTERN.test(trimmed)) {
+    throw new Error("Shell metacharacters are not allowed");
+  }
+  const tokens = trimmed.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return tokens.map((token) => token.replace(/^['"]|['"]$/g, ""));
+}
+function assertAllowedCommand(commandName, config) {
+  if (!config.shellAllowedCommands.includes(commandName.toLowerCase())) {
+    throw new Error(
+      `Command '${commandName}' is not in the allowed shell command list: ${config.shellAllowedCommands.join(", ")}`
+    );
+  }
+}
+function assertSafePathTokens(tokens, config) {
+  for (const token of tokens) {
+    if (token.startsWith("-")) {
+      continue;
+    }
+    const looksLikePath = token.startsWith("/") || token.startsWith("./") || token.startsWith("../") || token.includes("/");
+    if (looksLikePath) {
+      assertPathAllowed(token, config.allowedPaths);
+    }
+  }
+}
+async function executeShellCommand(command, config) {
+  try {
+    const tokens = tokenizeCommand(command);
+    const [commandName, ...args] = tokens;
+    if (!commandName) {
+      throw new Error("Command cannot be empty");
+    }
+    assertAllowedCommand(commandName, config);
+    assertSafePathTokens(args, config);
+    const { stdout, stderr } = await execFileAsync(commandName, args, {
+      cwd: config.allowedPaths[0],
+      timeout: config.shellCommandTimeoutMs,
+      maxBuffer: config.maxFileReadBytes
+    });
+    const output = [
+      `Command: ${command}`,
+      `Exit: 0`,
+      stdout ? `STDOUT:
+${stdout}` : "STDOUT: <empty>",
+      stderr ? `STDERR:
+${stderr}` : "STDERR: <empty>"
+    ].join("\n");
+    return ok(output);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return err(`Shell command rejected or failed: ${message}`);
+  }
+}
+async function writeFileSafely(targetPath, content, config) {
+  try {
+    const resolvedPath = assertPathAllowed(targetPath, config.allowedPaths);
+    const byteLength = Buffer.byteLength(content, "utf-8");
+    if (byteLength > config.maxFileWriteBytes) {
+      throw new Error(
+        `Content exceeds MAX_FILE_WRITE_BYTES (${config.maxFileWriteBytes} bytes)`
+      );
+    }
+    await ensureParentDirectory(resolvedPath);
+    await fs3.writeFile(resolvedPath, content, "utf-8");
+    return ok(`File written: ${resolvedPath}
+Bytes written: ${byteLength}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return err(`Write failed: ${message}`);
+  }
+}
+async function readFileSafely(targetPath, config) {
+  try {
+    const resolvedPath = assertPathAllowed(targetPath, config.allowedPaths);
+    const stats = await fs3.stat(resolvedPath);
+    if (stats.size > config.maxFileReadBytes) {
+      throw new Error(`File exceeds MAX_FILE_READ_BYTES (${config.maxFileReadBytes} bytes)`);
+    }
+    const content = await fs3.readFile(resolvedPath, "utf-8");
+    return ok(`File read: ${resolvedPath}
+Content:
+${content}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return err(`Read failed: ${message}`);
+  }
+}
+
 // src/index.ts
 async function main() {
   const config = loadConfig();
@@ -328,7 +504,7 @@ async function main() {
   });
   server.tool(
     "shell_command",
-    "Execute a shell command (intercepted by Safety Gate)",
+    "Execute an allowlisted shell command within configured safe roots",
     {
       command: z.string().describe("The shell command to execute")
     },
@@ -336,21 +512,9 @@ async function main() {
       const wrappedHandler = wrapToolHandler(
         {
           name: "shell_command",
-          description: "Execute a shell command (intercepted by Safety Gate)"
+          description: "Execute an allowlisted shell command within configured safe roots"
         },
-        async () => {
-          const command = args.command;
-          return {
-            content: [
-              {
-                type: "text",
-                text: `[MOCK] Shell command executed: ${command}
-stdout: (simulated output from: ${command})`
-              }
-            ],
-            isError: false
-          };
-        },
+        async () => executeShellCommand(args.command, config),
         config
       );
       return wrappedHandler(args);
@@ -358,7 +522,7 @@ stdout: (simulated output from: ${command})`
   );
   server.tool(
     "write_file",
-    "Write content to a file (intercepted by Safety Gate)",
+    "Write content to a file within configured safe roots",
     {
       path: z.string().describe("The file path to write to"),
       content: z.string().describe("The content to write")
@@ -367,20 +531,11 @@ stdout: (simulated output from: ${command})`
       const wrappedHandler = wrapToolHandler(
         {
           name: "write_file",
-          description: "Write content to a file (intercepted by Safety Gate)"
+          description: "Write content to a file within configured safe roots"
         },
         async () => {
-          const { path, content } = args;
-          return {
-            content: [
-              {
-                type: "text",
-                text: `[MOCK] File written: ${path}
-Bytes written: ${content.length}`
-              }
-            ],
-            isError: false
-          };
+          const { path: path3, content } = args;
+          return writeFileSafely(path3, content, config);
         },
         config
       );
@@ -389,7 +544,7 @@ Bytes written: ${content.length}`
   );
   server.tool(
     "read_file",
-    "Read content from a file (intercepted by Safety Gate)",
+    "Read content from a file within configured safe roots",
     {
       path: z.string().describe("The file path to read from")
     },
@@ -397,20 +552,11 @@ Bytes written: ${content.length}`
       const wrappedHandler = wrapToolHandler(
         {
           name: "read_file",
-          description: "Read content from a file (intercepted by Safety Gate)"
+          description: "Read content from a file within configured safe roots"
         },
         async () => {
-          const { path } = args;
-          return {
-            content: [
-              {
-                type: "text",
-                text: `[MOCK] File read: ${path}
-Content: (simulated file contents)`
-              }
-            ],
-            isError: false
-          };
+          const { path: path3 } = args;
+          return readFileSafely(path3, config);
         },
         config
       );

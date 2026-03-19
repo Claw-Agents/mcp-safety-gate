@@ -7,10 +7,14 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { loadConfig, logConfigOnStartup } from './lib/config.js';
 import { wrapToolHandler } from './lib/toolWrapper.js';
+import {
+  executeShellCommand,
+  readFileSafely,
+  writeFileSafely,
+} from './lib/realTools.js';
 
 /**
  * Main server initialization
@@ -31,7 +35,7 @@ async function main(): Promise<void> {
   // Tool 1: shell_command
   server.tool(
     'shell_command',
-    'Execute a shell command (intercepted by Safety Gate)',
+    'Execute an allowlisted shell command within configured safe roots',
     {
       command: z.string().describe('The shell command to execute'),
     } as any,
@@ -39,20 +43,9 @@ async function main(): Promise<void> {
       const wrappedHandler = wrapToolHandler(
         {
           name: 'shell_command',
-          description: 'Execute a shell command (intercepted by Safety Gate)',
+          description: 'Execute an allowlisted shell command within configured safe roots',
         },
-        async () => {
-          const command = (args as { command: string }).command;
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `[MOCK] Shell command executed: ${command}\nstdout: (simulated output from: ${command})`,
-              },
-            ],
-            isError: false,
-          } as CallToolResult;
-        },
+        async () => executeShellCommand((args as { command: string }).command, config),
         config
       );
       return wrappedHandler(args);
@@ -62,7 +55,7 @@ async function main(): Promise<void> {
   // Tool 2: write_file
   server.tool(
     'write_file',
-    'Write content to a file (intercepted by Safety Gate)',
+    'Write content to a file within configured safe roots',
     {
       path: z.string().describe('The file path to write to'),
       content: z.string().describe('The content to write'),
@@ -71,19 +64,11 @@ async function main(): Promise<void> {
       const wrappedHandler = wrapToolHandler(
         {
           name: 'write_file',
-          description: 'Write content to a file (intercepted by Safety Gate)',
+          description: 'Write content to a file within configured safe roots',
         },
         async () => {
           const { path, content } = args as { path: string; content: string };
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `[MOCK] File written: ${path}\nBytes written: ${content.length}`,
-              },
-            ],
-            isError: false,
-          } as CallToolResult;
+          return writeFileSafely(path, content, config);
         },
         config
       );
@@ -94,7 +79,7 @@ async function main(): Promise<void> {
   // Tool 3: read_file
   server.tool(
     'read_file',
-    'Read content from a file (intercepted by Safety Gate)',
+    'Read content from a file within configured safe roots',
     {
       path: z.string().describe('The file path to read from'),
     } as any,
@@ -102,19 +87,11 @@ async function main(): Promise<void> {
       const wrappedHandler = wrapToolHandler(
         {
           name: 'read_file',
-          description: 'Read content from a file (intercepted by Safety Gate)',
+          description: 'Read content from a file within configured safe roots',
         },
         async () => {
           const { path } = args as { path: string };
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `[MOCK] File read: ${path}\nContent: (simulated file contents)`,
-              },
-            ],
-            isError: false,
-          } as CallToolResult;
+          return readFileSafely(path, config);
         },
         config
       );

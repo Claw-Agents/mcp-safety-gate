@@ -30,4 +30,9 @@ export interface SafetyGateConfig {
   restrictedKeywords: string[];
   auditLogPath: string;
   verbose: boolean;
+  allowedPaths: string[];
+  shellAllowedCommands: string[];
+  maxFileReadBytes: number;
+  maxFileWriteBytes: number;
+  shellCommandTimeoutMs: number;
 }
