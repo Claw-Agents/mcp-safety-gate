@@ -4,7 +4,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { shouldBlockTool, validateToolArguments } from './policyEngine.js';
+import { evaluateToolPolicy, validateToolArguments } from './policyEngine.js';
 import { logToolCall } from './auditLogger.js';
 import { SafetyGateConfig } from '../types/index.js';
 
@@ -40,6 +40,7 @@ export function wrapToolHandler(
           reason: validationDecision.reason,
           result: 'error',
           executionTimeMs,
+          ruleId: validationDecision.ruleId,
         },
         config.auditLogPath,
         config.verbose
@@ -56,14 +57,10 @@ export function wrapToolHandler(
       };
     }
 
-    // Step 2: Check security policy
-    const policyDecision = shouldBlockTool(
-      toolName,
-      arguments_,
-      config.restrictedKeywords
-    );
+    // Step 2: Check structured policy
+    const policyDecision = evaluateToolPolicy(toolName, arguments_, config.policy);
 
-    if (!policyDecision.allowed) {
+    if (policyDecision.effect === 'deny') {
       const executionTimeMs = Date.now() - startTime;
       await logToolCall(
         {
@@ -75,6 +72,7 @@ export function wrapToolHandler(
           blockedKeywords: policyDecision.blockedKeywords,
           result: 'error',
           executionTimeMs,
+          ruleId: policyDecision.ruleId,
         },
         config.auditLogPath,
         config.verbose
@@ -91,6 +89,35 @@ export function wrapToolHandler(
       };
     }
 
+    if (policyDecision.effect === 'review') {
+      const executionTimeMs = Date.now() - startTime;
+      await logToolCall(
+        {
+          timestamp: new Date().toISOString(),
+          toolName,
+          arguments: arguments_,
+          decision: 'review',
+          reason: policyDecision.reason,
+          blockedKeywords: policyDecision.blockedKeywords,
+          result: 'pending',
+          executionTimeMs,
+          ruleId: policyDecision.ruleId,
+        },
+        config.auditLogPath,
+        config.verbose
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Review Required: ${policyDecision.reason}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
     // Step 3: Dry-run mode check
     if (config.dryRun) {
       const executionTimeMs = Date.now() - startTime;
@@ -100,7 +127,7 @@ export function wrapToolHandler(
           toolName,
           arguments: arguments_,
           decision: 'dryrun',
-          reason: 'Dry-Run Mode: Tool execution simulated, not actually executed',
+          reason: 'Dry-Run Mode: Tool execution simulated, not actually run',
           result: 'success',
           executionTimeMs,
         },

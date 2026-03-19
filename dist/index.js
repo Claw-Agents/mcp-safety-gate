@@ -7,6 +7,7 @@ import { z } from "zod";
 
 // src/lib/config.ts
 import path from "path";
+import { promises as fs } from "fs";
 var RESTRICTED_KEYWORDS = [
   // System destructive operations
   "rm",
@@ -57,6 +58,52 @@ var DEFAULT_SHELL_ALLOWED_COMMANDS = [
   "which",
   "echo"
 ];
+var DEFAULT_POLICY_RULES = [
+  {
+    id: "deny-dangerous-shell-keywords",
+    effect: "deny",
+    reason: "Dangerous shell keywords are denied",
+    tools: ["shell_command"],
+    match: {
+      keywords: RESTRICTED_KEYWORDS
+    }
+  },
+  {
+    id: "deny-sensitive-write-keywords",
+    effect: "deny",
+    reason: "Sensitive secrets and credential writes are denied",
+    tools: ["write_file"],
+    match: {
+      keywords: [
+        ".env",
+        ".aws/credentials",
+        ".ssh/id_rsa",
+        "private_key",
+        "github_token",
+        "aws_access_key",
+        "aws_secret_key"
+      ]
+    }
+  },
+  {
+    id: "review-sensitive-read-keywords",
+    effect: "review",
+    reason: "Sensitive reads require explicit review",
+    tools: ["read_file"],
+    match: {
+      keywords: [".env", ".aws/credentials", ".ssh/id_rsa", "private_key"]
+    }
+  },
+  {
+    id: "review-high-impact-project-files",
+    effect: "review",
+    reason: "Writes to high-impact project files require explicit review",
+    tools: ["write_file"],
+    match: {
+      pathSubstrings: ["package.json", "tsconfig.json", "Dockerfile", ".github/workflows/"]
+    }
+  }
+];
 function parseListEnv(value, fallback) {
   if (!value || value.trim().length === 0) {
     return fallback;
@@ -67,7 +114,22 @@ function parseNumberEnv(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
-function loadConfig() {
+async function loadPolicy(policyFilePath) {
+  if (!policyFilePath) {
+    return {
+      version: 1,
+      rules: DEFAULT_POLICY_RULES
+    };
+  }
+  const resolvedPolicyPath = path.resolve(policyFilePath);
+  const content = await fs.readFile(resolvedPolicyPath, "utf-8");
+  const parsed = JSON.parse(content);
+  return {
+    version: parsed.version ?? 1,
+    rules: Array.isArray(parsed.rules) ? parsed.rules : DEFAULT_POLICY_RULES
+  };
+}
+async function loadConfig() {
   const dryRun = process.env.DRY_RUN === "true";
   const verbose = process.env.VERBOSE === "true";
   const auditLogPath = process.env.AUDIT_LOG_PATH || "./audit_log.json";
@@ -78,6 +140,7 @@ function loadConfig() {
     process.env.SHELL_ALLOWED_COMMANDS,
     DEFAULT_SHELL_ALLOWED_COMMANDS
   ).map((command) => command.toLowerCase());
+  const policyFilePath = process.env.POLICY_FILE ? path.resolve(process.env.POLICY_FILE) : void 0;
   return {
     dryRun,
     restrictedKeywords: RESTRICTED_KEYWORDS,
@@ -87,7 +150,9 @@ function loadConfig() {
     shellAllowedCommands,
     maxFileReadBytes: parseNumberEnv(process.env.MAX_FILE_READ_BYTES, 1024 * 1024),
     maxFileWriteBytes: parseNumberEnv(process.env.MAX_FILE_WRITE_BYTES, 256 * 1024),
-    shellCommandTimeoutMs: parseNumberEnv(process.env.SHELL_COMMAND_TIMEOUT_MS, 5e3)
+    shellCommandTimeoutMs: parseNumberEnv(process.env.SHELL_COMMAND_TIMEOUT_MS, 5e3),
+    policy: await loadPolicy(policyFilePath),
+    policyFilePath
   };
 }
 function logConfigOnStartup(config) {
@@ -99,11 +164,14 @@ function logConfigOnStartup(config) {
   console.log(`  Max File Read Bytes: ${config.maxFileReadBytes}`);
   console.log(`  Max File Write Bytes: ${config.maxFileWriteBytes}`);
   console.log(`  Shell Command Timeout (ms): ${config.shellCommandTimeoutMs}`);
+  console.log(`  Policy File: ${config.policyFilePath ?? "<built-in default>"}`);
+  console.log(`  Policy Rules: ${config.policy.rules.length}`);
   console.log(`  Restricted Keywords: ${config.restrictedKeywords.length} patterns loaded`);
   console.log(`  Verbose Logging: ${config.verbose}`);
 }
 
 // src/lib/policyEngine.ts
+import path2 from "path";
 function flattenObjectToStrings(obj) {
   const strings = [];
   function traverse(current) {
@@ -120,38 +188,90 @@ function flattenObjectToStrings(obj) {
   traverse(obj);
   return strings;
 }
-function containsRestrictedKeyword(value, restrictedKeywords) {
-  const lowerValue = value.toLowerCase();
-  const foundKeywords = [];
-  for (const keyword of restrictedKeywords) {
-    if (lowerValue.includes(keyword.toLowerCase())) {
-      foundKeywords.push(keyword);
+function containsKeywords(values, keywords) {
+  const foundKeywords = /* @__PURE__ */ new Set();
+  for (const value of values) {
+    const lowerValue = value.toLowerCase();
+    for (const keyword of keywords) {
+      if (lowerValue.includes(keyword.toLowerCase())) {
+        foundKeywords.add(keyword);
+      }
     }
   }
   return {
-    found: foundKeywords.length > 0,
-    keywords: foundKeywords
+    matched: foundKeywords.size > 0,
+    keywords: Array.from(foundKeywords).sort()
   };
 }
-function shouldBlockTool(toolName, arguments_, restrictedKeywords) {
+function extractPathValue(arguments_) {
+  return typeof arguments_.path === "string" ? arguments_.path : void 0;
+}
+function matchesPathSubstrings(pathValue, pathSubstrings) {
+  if (!pathValue) {
+    return false;
+  }
+  const normalized = path2.normalize(pathValue).toLowerCase();
+  return pathSubstrings.some((fragment) => normalized.includes(fragment.toLowerCase()));
+}
+function extractCommandName(arguments_) {
+  if (typeof arguments_.command !== "string") {
+    return void 0;
+  }
+  const command = arguments_.command.trim();
+  if (!command) {
+    return void 0;
+  }
+  const [firstToken] = command.split(/\s+/, 1);
+  return firstToken?.toLowerCase();
+}
+function matchesRule(toolName, arguments_, rule) {
+  if (!rule.tools.includes("*") && !rule.tools.includes(toolName)) {
+    return { matched: false };
+  }
   const stringValues = flattenObjectToStrings(arguments_);
-  const allBlockedKeywords = [];
-  for (const value of stringValues) {
-    const { found, keywords } = containsRestrictedKeyword(value, restrictedKeywords);
-    if (found) {
-      allBlockedKeywords.push(...keywords);
+  const commandName = extractCommandName(arguments_);
+  const pathValue = extractPathValue(arguments_);
+  const matchers = rule.match;
+  let blockedKeywords;
+  if (matchers.commandNames && matchers.commandNames.length > 0) {
+    if (!commandName || !matchers.commandNames.some((name) => name.toLowerCase() === commandName)) {
+      return { matched: false };
     }
   }
-  const uniqueBlockedKeywords = Array.from(new Set(allBlockedKeywords)).sort();
-  if (uniqueBlockedKeywords.length > 0) {
+  if (matchers.pathSubstrings && matchers.pathSubstrings.length > 0) {
+    if (!matchesPathSubstrings(pathValue, matchers.pathSubstrings)) {
+      return { matched: false };
+    }
+  }
+  if (matchers.keywords && matchers.keywords.length > 0) {
+    const keywordMatch = containsKeywords(stringValues, matchers.keywords);
+    if (!keywordMatch.matched) {
+      return { matched: false };
+    }
+    blockedKeywords = keywordMatch.keywords;
+  }
+  return {
+    matched: true,
+    blockedKeywords
+  };
+}
+function evaluateToolPolicy(toolName, arguments_, policy) {
+  for (const rule of policy.rules) {
+    const result = matchesRule(toolName, arguments_, rule);
+    if (!result.matched) {
+      continue;
+    }
     return {
-      allowed: false,
-      reason: `Blocked: restricted keyword(s) found: ${uniqueBlockedKeywords.join(", ")}`,
-      blockedKeywords: uniqueBlockedKeywords
+      allowed: rule.effect === "allow",
+      effect: rule.effect,
+      reason: `${rule.reason} (rule: ${rule.id})`,
+      blockedKeywords: result.blockedKeywords,
+      ruleId: rule.id
     };
   }
   return {
     allowed: true,
+    effect: "allow",
     reason: "Policy check passed"
   };
 }
@@ -159,6 +279,7 @@ function validateToolArguments(toolName, arguments_) {
   if (typeof arguments_ !== "object" || arguments_ === null) {
     return {
       allowed: false,
+      effect: "deny",
       reason: "Invalid arguments: must be an object"
     };
   }
@@ -167,6 +288,7 @@ function validateToolArguments(toolName, arguments_) {
       if (!("command" in arguments_) || typeof arguments_.command !== "string") {
         return {
           allowed: false,
+          effect: "deny",
           reason: "Invalid arguments: shell_command requires 'command' string field"
         };
       }
@@ -175,12 +297,14 @@ function validateToolArguments(toolName, arguments_) {
       if (!("path" in arguments_) || typeof arguments_.path !== "string") {
         return {
           allowed: false,
+          effect: "deny",
           reason: "Invalid arguments: write_file requires 'path' string field"
         };
       }
       if (!("content" in arguments_) || typeof arguments_.content !== "string") {
         return {
           allowed: false,
+          effect: "deny",
           reason: "Invalid arguments: write_file requires 'content' string field"
         };
       }
@@ -189,6 +313,7 @@ function validateToolArguments(toolName, arguments_) {
       if (!("path" in arguments_) || typeof arguments_.path !== "string") {
         return {
           allowed: false,
+          effect: "deny",
           reason: "Invalid arguments: read_file requires 'path' string field"
         };
       }
@@ -196,24 +321,25 @@ function validateToolArguments(toolName, arguments_) {
   }
   return {
     allowed: true,
+    effect: "allow",
     reason: "Arguments validation passed"
   };
 }
 
 // src/lib/auditLogger.ts
-import { promises as fs } from "fs";
+import { promises as fs2 } from "fs";
 async function ensureAuditLogExists(auditLogPath) {
   try {
-    await fs.access(auditLogPath);
+    await fs2.access(auditLogPath);
   } catch {
-    await fs.writeFile(auditLogPath, "", "utf-8");
+    await fs2.writeFile(auditLogPath, "", "utf-8");
   }
 }
 async function logToolCall(entry, auditLogPath, verbose = false) {
   try {
     await ensureAuditLogExists(auditLogPath);
     const jsonLine = JSON.stringify(entry) + "\n";
-    await fs.appendFile(auditLogPath, jsonLine, "utf-8");
+    await fs2.appendFile(auditLogPath, jsonLine, "utf-8");
     if (verbose) {
       console.log(
         `[AuditLog] ${entry.toolName} - ${entry.decision}: ${entry.reason}`
@@ -240,7 +366,8 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
           decision: "denied",
           reason: validationDecision.reason,
           result: "error",
-          executionTimeMs
+          executionTimeMs,
+          ruleId: validationDecision.ruleId
         },
         config.auditLogPath,
         config.verbose
@@ -255,12 +382,8 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
         isError: true
       };
     }
-    const policyDecision = shouldBlockTool(
-      toolName,
-      arguments_,
-      config.restrictedKeywords
-    );
-    if (!policyDecision.allowed) {
+    const policyDecision = evaluateToolPolicy(toolName, arguments_, config.policy);
+    if (policyDecision.effect === "deny") {
       const executionTimeMs = Date.now() - startTime;
       await logToolCall(
         {
@@ -271,7 +394,8 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
           reason: policyDecision.reason,
           blockedKeywords: policyDecision.blockedKeywords,
           result: "error",
-          executionTimeMs
+          executionTimeMs,
+          ruleId: policyDecision.ruleId
         },
         config.auditLogPath,
         config.verbose
@@ -286,6 +410,33 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
         isError: true
       };
     }
+    if (policyDecision.effect === "review") {
+      const executionTimeMs = Date.now() - startTime;
+      await logToolCall(
+        {
+          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+          toolName,
+          arguments: arguments_,
+          decision: "review",
+          reason: policyDecision.reason,
+          blockedKeywords: policyDecision.blockedKeywords,
+          result: "pending",
+          executionTimeMs,
+          ruleId: policyDecision.ruleId
+        },
+        config.auditLogPath,
+        config.verbose
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Review Required: ${policyDecision.reason}`
+          }
+        ],
+        isError: true
+      };
+    }
     if (config.dryRun) {
       const executionTimeMs = Date.now() - startTime;
       await logToolCall(
@@ -294,7 +445,7 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
           toolName,
           arguments: arguments_,
           decision: "dryrun",
-          reason: "Dry-Run Mode: Tool execution simulated, not actually executed",
+          reason: "Dry-Run Mode: Tool execution simulated, not actually run",
           result: "success",
           executionTimeMs
         },
@@ -358,23 +509,23 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
 }
 
 // src/lib/realTools.ts
-import { promises as fs3 } from "fs";
+import { promises as fs4 } from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
 // src/lib/fsPolicy.ts
-import path2 from "path";
-import { promises as fs2 } from "fs";
+import path3 from "path";
+import { promises as fs3 } from "fs";
 function isPathWithinAllowedRoots(targetPath, allowedRoots) {
-  const resolvedTarget = path2.resolve(targetPath);
+  const resolvedTarget = path3.resolve(targetPath);
   return allowedRoots.some((root) => {
-    const resolvedRoot = path2.resolve(root);
-    const relative = path2.relative(resolvedRoot, resolvedTarget);
-    return relative === "" || !relative.startsWith("..") && !path2.isAbsolute(relative);
+    const resolvedRoot = path3.resolve(root);
+    const relative = path3.relative(resolvedRoot, resolvedTarget);
+    return relative === "" || !relative.startsWith("..") && !path3.isAbsolute(relative);
   });
 }
 function assertPathAllowed(targetPath, allowedRoots) {
-  const resolvedTarget = path2.resolve(targetPath);
+  const resolvedTarget = path3.resolve(targetPath);
   if (!isPathWithinAllowedRoots(resolvedTarget, allowedRoots)) {
     throw new Error(
       `Path is outside allowed roots: ${resolvedTarget}. Allowed roots: ${allowedRoots.join(", ")}`
@@ -383,7 +534,7 @@ function assertPathAllowed(targetPath, allowedRoots) {
   return resolvedTarget;
 }
 async function ensureParentDirectory(targetPath) {
-  await fs2.mkdir(path2.dirname(targetPath), { recursive: true });
+  await fs3.mkdir(path3.dirname(targetPath), { recursive: true });
 }
 
 // src/lib/realTools.ts
@@ -468,7 +619,7 @@ async function writeFileSafely(targetPath, content, config) {
       );
     }
     await ensureParentDirectory(resolvedPath);
-    await fs3.writeFile(resolvedPath, content, "utf-8");
+    await fs4.writeFile(resolvedPath, content, "utf-8");
     return ok(`File written: ${resolvedPath}
 Bytes written: ${byteLength}`);
   } catch (error) {
@@ -479,11 +630,11 @@ Bytes written: ${byteLength}`);
 async function readFileSafely(targetPath, config) {
   try {
     const resolvedPath = assertPathAllowed(targetPath, config.allowedPaths);
-    const stats = await fs3.stat(resolvedPath);
+    const stats = await fs4.stat(resolvedPath);
     if (stats.size > config.maxFileReadBytes) {
       throw new Error(`File exceeds MAX_FILE_READ_BYTES (${config.maxFileReadBytes} bytes)`);
     }
-    const content = await fs3.readFile(resolvedPath, "utf-8");
+    const content = await fs4.readFile(resolvedPath, "utf-8");
     return ok(`File read: ${resolvedPath}
 Content:
 ${content}`);
@@ -495,7 +646,7 @@ ${content}`);
 
 // src/index.ts
 async function main() {
-  const config = loadConfig();
+  const config = await loadConfig();
   console.error("[SafetyGate] Initializing Security Middleware...");
   logConfigOnStartup(config);
   const server = new McpServer({
@@ -534,8 +685,8 @@ async function main() {
           description: "Write content to a file within configured safe roots"
         },
         async () => {
-          const { path: path3, content } = args;
-          return writeFileSafely(path3, content, config);
+          const { path: path4, content } = args;
+          return writeFileSafely(path4, content, config);
         },
         config
       );
@@ -555,8 +706,8 @@ async function main() {
           description: "Read content from a file within configured safe roots"
         },
         async () => {
-          const { path: path3 } = args;
-          return readFileSafely(path3, config);
+          const { path: path4 } = args;
+          return readFileSafely(path4, config);
         },
         config
       );

@@ -4,6 +4,8 @@ import os from 'os';
 import path from 'path';
 import { promises as fs } from 'fs';
 import { executeShellCommand, readFileSafely, writeFileSafely } from '../src/lib/realTools.js';
+import { evaluateToolPolicy } from '../src/lib/policyEngine.js';
+import { wrapToolHandler } from '../src/lib/toolWrapper.js';
 import { SafetyGateConfig } from '../src/types/index.js';
 
 async function withTempDir(run: (dir: string, config: SafetyGateConfig) => Promise<void>): Promise<void> {
@@ -18,6 +20,29 @@ async function withTempDir(run: (dir: string, config: SafetyGateConfig) => Promi
     maxFileReadBytes: 1024 * 1024,
     maxFileWriteBytes: 1024 * 1024,
     shellCommandTimeoutMs: 3_000,
+    policy: {
+      version: 1,
+      rules: [
+        {
+          id: 'deny-env-writes',
+          effect: 'deny',
+          reason: 'Environment file writes are denied',
+          tools: ['write_file'],
+          match: {
+            pathSubstrings: ['.env'],
+          },
+        },
+        {
+          id: 'review-package-json',
+          effect: 'review',
+          reason: 'package.json writes require review',
+          tools: ['write_file'],
+          match: {
+            pathSubstrings: ['package.json'],
+          },
+        },
+      ],
+    },
   };
 
   try {
@@ -64,5 +89,46 @@ test('shell_command rejects non-allowlisted commands and shell metacharacters', 
     const metacharacters = await executeShellCommand('echo hi && pwd', config);
     assert.equal(metacharacters.isError, true);
     assert.match((metacharacters.content?.[0] as { text: string }).text, /metacharacters/);
+  });
+});
+
+test('structured policy can deny or require review before execution', async () => {
+  await withTempDir(async (_dir, config) => {
+    const denied = evaluateToolPolicy('write_file', { path: '.env', content: 'x' }, config.policy);
+    assert.equal(denied.effect, 'deny');
+    assert.equal(denied.ruleId, 'deny-env-writes');
+
+    const review = evaluateToolPolicy(
+      'write_file',
+      { path: 'package.json', content: '{}' },
+      config.policy
+    );
+    assert.equal(review.effect, 'review');
+    assert.equal(review.ruleId, 'review-package-json');
+  });
+});
+
+test('tool wrapper returns review required without executing handler', async () => {
+  await withTempDir(async (_dir, config) => {
+    let executed = false;
+    const handler = wrapToolHandler(
+      {
+        name: 'write_file',
+        description: 'Write content safely',
+      },
+      async () => {
+        executed = true;
+        return {
+          content: [{ type: 'text', text: 'should not happen' }],
+          isError: false,
+        };
+      },
+      config
+    );
+
+    const result = await handler({ path: 'package.json', content: '{}' });
+    assert.equal(result.isError, true);
+    assert.equal(executed, false);
+    assert.match((result.content?.[0] as { text: string }).text, /Review Required/);
   });
 });

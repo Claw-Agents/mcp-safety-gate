@@ -1,9 +1,10 @@
 /**
  * Policy Engine for Security Middleware
- * Evaluates tool calls against restricted keywords and patterns
+ * Evaluates tool calls against structured per-tool policy rules
  */
 
-import { PolicyDecision } from '../types/index.js';
+import path from 'path';
+import { PolicyDecision, PolicyRule, SafetyGatePolicy } from '../types/index.js';
 
 /**
  * Convert an object to a flat list of all string values (for searching)
@@ -27,63 +28,121 @@ function flattenObjectToStrings(obj: unknown): string[] {
   return strings;
 }
 
-/**
- * Check if a value contains a restricted keyword (case-insensitive substring match)
- */
-function containsRestrictedKeyword(
-  value: string,
-  restrictedKeywords: string[]
-): { found: boolean; keywords: string[] } {
-  const lowerValue = value.toLowerCase();
-  const foundKeywords: string[] = [];
+function containsKeywords(
+  values: string[],
+  keywords: string[]
+): { matched: boolean; keywords: string[] } {
+  const foundKeywords = new Set<string>();
 
-  for (const keyword of restrictedKeywords) {
-    if (lowerValue.includes(keyword.toLowerCase())) {
-      foundKeywords.push(keyword);
+  for (const value of values) {
+    const lowerValue = value.toLowerCase();
+    for (const keyword of keywords) {
+      if (lowerValue.includes(keyword.toLowerCase())) {
+        foundKeywords.add(keyword);
+      }
     }
   }
 
   return {
-    found: foundKeywords.length > 0,
-    keywords: foundKeywords,
+    matched: foundKeywords.size > 0,
+    keywords: Array.from(foundKeywords).sort(),
+  };
+}
+
+function extractPathValue(arguments_: Record<string, unknown>): string | undefined {
+  return typeof arguments_.path === 'string' ? arguments_.path : undefined;
+}
+
+function matchesPathSubstrings(pathValue: string | undefined, pathSubstrings: string[]): boolean {
+  if (!pathValue) {
+    return false;
+  }
+
+  const normalized = path.normalize(pathValue).toLowerCase();
+  return pathSubstrings.some(fragment => normalized.includes(fragment.toLowerCase()));
+}
+
+function extractCommandName(arguments_: Record<string, unknown>): string | undefined {
+  if (typeof arguments_.command !== 'string') {
+    return undefined;
+  }
+
+  const command = arguments_.command.trim();
+  if (!command) {
+    return undefined;
+  }
+
+  const [firstToken] = command.split(/\s+/, 1);
+  return firstToken?.toLowerCase();
+}
+
+function matchesRule(
+  toolName: string,
+  arguments_: Record<string, unknown>,
+  rule: PolicyRule
+): { matched: boolean; blockedKeywords?: string[] } {
+  if (!rule.tools.includes('*') && !rule.tools.includes(toolName)) {
+    return { matched: false };
+  }
+
+  const stringValues = flattenObjectToStrings(arguments_);
+  const commandName = extractCommandName(arguments_);
+  const pathValue = extractPathValue(arguments_);
+  const matchers = rule.match;
+  let blockedKeywords: string[] | undefined;
+
+  if (matchers.commandNames && matchers.commandNames.length > 0) {
+    if (!commandName || !matchers.commandNames.some(name => name.toLowerCase() === commandName)) {
+      return { matched: false };
+    }
+  }
+
+  if (matchers.pathSubstrings && matchers.pathSubstrings.length > 0) {
+    if (!matchesPathSubstrings(pathValue, matchers.pathSubstrings)) {
+      return { matched: false };
+    }
+  }
+
+  if (matchers.keywords && matchers.keywords.length > 0) {
+    const keywordMatch = containsKeywords(stringValues, matchers.keywords);
+    if (!keywordMatch.matched) {
+      return { matched: false };
+    }
+    blockedKeywords = keywordMatch.keywords;
+  }
+
+  return {
+    matched: true,
+    blockedKeywords,
   };
 }
 
 /**
- * Evaluate whether a tool call should be blocked
- * Scans all arguments for restricted keywords
+ * Evaluate whether a tool call should be allowed, denied, or sent for review.
  */
-export function shouldBlockTool(
+export function evaluateToolPolicy(
   toolName: string,
   arguments_: Record<string, unknown>,
-  restrictedKeywords: string[]
+  policy: SafetyGatePolicy
 ): PolicyDecision {
-  // Extract all string values from arguments
-  const stringValues = flattenObjectToStrings(arguments_);
-
-  // Check each string value against restricted keywords
-  const allBlockedKeywords: string[] = [];
-
-  for (const value of stringValues) {
-    const { found, keywords } = containsRestrictedKeyword(value, restrictedKeywords);
-    if (found) {
-      allBlockedKeywords.push(...keywords);
+  for (const rule of policy.rules) {
+    const result = matchesRule(toolName, arguments_, rule);
+    if (!result.matched) {
+      continue;
     }
-  }
 
-  // Remove duplicates and sort for consistent output
-  const uniqueBlockedKeywords = Array.from(new Set(allBlockedKeywords)).sort();
-
-  if (uniqueBlockedKeywords.length > 0) {
     return {
-      allowed: false,
-      reason: `Blocked: restricted keyword(s) found: ${uniqueBlockedKeywords.join(', ')}`,
-      blockedKeywords: uniqueBlockedKeywords,
+      allowed: rule.effect === 'allow',
+      effect: rule.effect,
+      reason: `${rule.reason} (rule: ${rule.id})`,
+      blockedKeywords: result.blockedKeywords,
+      ruleId: rule.id,
     };
   }
 
   return {
     allowed: true,
+    effect: 'allow',
     reason: 'Policy check passed',
   };
 }
@@ -100,6 +159,7 @@ export function validateToolArguments(
   if (typeof arguments_ !== 'object' || arguments_ === null) {
     return {
       allowed: false,
+      effect: 'deny',
       reason: 'Invalid arguments: must be an object',
     };
   }
@@ -110,6 +170,7 @@ export function validateToolArguments(
       if (!('command' in arguments_) || typeof arguments_.command !== 'string') {
         return {
           allowed: false,
+          effect: 'deny',
           reason: "Invalid arguments: shell_command requires 'command' string field",
         };
       }
@@ -119,12 +180,14 @@ export function validateToolArguments(
       if (!('path' in arguments_) || typeof arguments_.path !== 'string') {
         return {
           allowed: false,
+          effect: 'deny',
           reason: "Invalid arguments: write_file requires 'path' string field",
         };
       }
       if (!('content' in arguments_) || typeof arguments_.content !== 'string') {
         return {
           allowed: false,
+          effect: 'deny',
           reason: "Invalid arguments: write_file requires 'content' string field",
         };
       }
@@ -134,6 +197,7 @@ export function validateToolArguments(
       if (!('path' in arguments_) || typeof arguments_.path !== 'string') {
         return {
           allowed: false,
+          effect: 'deny',
           reason: "Invalid arguments: read_file requires 'path' string field",
         };
       }
@@ -142,6 +206,7 @@ export function validateToolArguments(
 
   return {
     allowed: true,
+    effect: 'allow',
     reason: 'Arguments validation passed',
   };
 }

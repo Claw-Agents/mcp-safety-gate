@@ -20,7 +20,7 @@ import {
  * Main server initialization
  */
 async function main(): Promise<void> {
-  const config = loadConfig();
+  const config = await loadConfig();
 
   // Log configuration on startup
   console.error('[SafetyGate] Initializing Security Middleware...');

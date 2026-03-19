@@ -7,6 +7,7 @@ A TypeScript-based Model Context Protocol (MCP) server that acts as a security m
 - **🔒 Instruction Filtering**: Validates tool arguments against a list of restricted keywords (e.g., `rm`, `sudo`, `.env`, etc.)
 - **📁 Path Sandboxing**: Restricts file reads and writes to configured safe roots
 - **🖥️ Safe Shell Execution**: Executes only allowlisted shell commands, rejects shell metacharacters, and validates path-like arguments
+- **🧭 Structured Policy Engine**: Supports per-tool allow/deny/review rules for keywords, paths, and command names
 - **🏃 Dry-Run Mode**: Optional simulation mode that logs intended actions without executing them
 - **📝 Audit Logging**: Automatically logs all intercepted tool calls to a local JSON Lines file with timestamps and metadata
 - **📋 MCP Compliant**: Follows the official Model Context Protocol specification using `@modelcontextprotocol/sdk`
@@ -49,6 +50,7 @@ Configuration is managed via environment variables:
 | `MAX_FILE_READ_BYTES` | Maximum bytes returned by `read_file` or shell output buffer | `1048576` | `MAX_FILE_READ_BYTES=262144` |
 | `MAX_FILE_WRITE_BYTES` | Maximum bytes accepted by `write_file` | `262144` | `MAX_FILE_WRITE_BYTES=65536` |
 | `SHELL_COMMAND_TIMEOUT_MS` | Timeout for allowlisted shell commands | `5000` | `SHELL_COMMAND_TIMEOUT_MS=2000` |
+| `POLICY_FILE` | Optional path to a JSON policy file overriding the built-in default policy | built-in default policy | `POLICY_FILE=./policy/safety-gate.policy.json` |
 
 ### Example: Starting in Dry-Run Mode
 
@@ -104,6 +106,8 @@ The server provides three intercepted tools:
 Execute an allowlisted shell command with security checks.
 
 Safety Gate rejects shell metacharacters such as `&&`, `|`, `;`, redirections, command substitution, and backslashes. It also rejects commands that are not in the configured allowlist.
+
+Even if a command is allowlisted, it still passes through the structured policy engine first. That allows you to mark some patterns as **deny** and others as **review required**.
 
 **Input:**
 ```json
@@ -438,6 +442,49 @@ chmod 666 ./audit_log.json
 3. Review tool arguments for case-insensitive matches
 4. Adjust restricted keywords list if needed
 
+## Policy Model
+
+Safety Gate now supports a structured policy model with three effects:
+
+- `allow` — execution proceeds
+- `deny` — execution is blocked immediately
+- `review` — execution is paused and surfaced as requiring explicit review
+
+Rules are evaluated in order, first match wins.
+
+Example policy file:
+
+```json
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "deny-env-writes",
+      "effect": "deny",
+      "reason": "Environment file writes are denied",
+      "tools": ["write_file"],
+      "match": {
+        "pathSubstrings": [".env"]
+      }
+    },
+    {
+      "id": "review-package-json",
+      "effect": "review",
+      "reason": "package.json writes require review",
+      "tools": ["write_file"],
+      "match": {
+        "pathSubstrings": ["package.json"]
+      }
+    }
+  ]
+}
+```
+
+Supported matchers:
+- `keywords` — case-insensitive substring match across string arguments
+- `pathSubstrings` — case-insensitive substring match against the `path` argument
+- `commandNames` — command-name match for `shell_command`
+
 ## Testing
 
 ```bash
@@ -451,6 +498,8 @@ Current test coverage includes:
 - rejection of out-of-bounds paths
 - allowlisted shell execution
 - rejection of disallowed commands and shell metacharacters
+- structured deny/review policy decisions
+- wrapper behavior for review-required requests
 
 ## Future Enhancements
 
