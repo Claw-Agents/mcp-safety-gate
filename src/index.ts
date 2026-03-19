@@ -11,6 +11,8 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { loadConfig, logConfigOnStartup } from './lib/config.js';
 import { wrapToolHandler } from './lib/toolWrapper.js';
+import { logToolCall } from './lib/auditLogger.js';
+import { sanitizeAuditArguments } from './lib/auditHelpers.js';
 import {
   executeShellCommand,
   readFileSafely,
@@ -36,6 +38,38 @@ function err(text: string): CallToolResult {
     content: [{ type: 'text', text }],
     isError: true,
   };
+}
+
+async function auditLifecycleEvent(
+  config: SafetyGateConfig,
+  toolName: string,
+  arguments_: Record<string, unknown>,
+  options: {
+    decision: 'allowed' | 'denied';
+    reason: string;
+    result: 'success' | 'error';
+    lifecycleStage: 'approved' | 'rejected' | 'executed' | 'expired';
+    approvalRequestId?: string;
+    actor?: string;
+    actorAuthenticated?: boolean;
+  }
+): Promise<void> {
+  await logToolCall(
+    {
+      timestamp: new Date().toISOString(),
+      toolName,
+      arguments: sanitizeAuditArguments(arguments_),
+      decision: options.decision,
+      reason: options.reason,
+      result: options.result,
+      approvalRequestId: options.approvalRequestId,
+      lifecycleStage: options.lifecycleStage,
+      actor: options.actor,
+      actorAuthenticated: options.actorAuthenticated,
+    },
+    config.auditLogPath,
+    config.verbose
+  );
 }
 
 async function dispatchToolExecution(
@@ -232,6 +266,15 @@ async function main(): Promise<void> {
             notes: typedArgs.notes,
           }
         );
+        await auditLifecycleEvent(config, 'approve_request', typedArgs, {
+          decision: 'allowed',
+          reason: `Approval granted for request ${request.id}`,
+          result: 'success',
+          lifecycleStage: 'approved',
+          approvalRequestId: request.id,
+          actor: identity.approver,
+          actorAuthenticated: identity.authenticated,
+        });
         return ok(`Approved request ${request.id} for tool ${request.toolName}`);
       } catch (error) {
         return err(error instanceof Error ? error.message : String(error));
@@ -271,6 +314,15 @@ async function main(): Promise<void> {
             notes: typedArgs.notes,
           }
         );
+        await auditLifecycleEvent(config, 'reject_request', typedArgs, {
+          decision: 'allowed',
+          reason: `Approval rejected for request ${request.id}`,
+          result: 'success',
+          lifecycleStage: 'rejected',
+          approvalRequestId: request.id,
+          actor: identity.approver,
+          actorAuthenticated: identity.authenticated,
+        });
         return ok(`Rejected request ${request.id} for tool ${request.toolName}`);
       } catch (error) {
         return err(error instanceof Error ? error.message : String(error));
@@ -302,6 +354,14 @@ async function main(): Promise<void> {
         }
 
         if (request.status !== 'approved') {
+          await auditLifecycleEvent(config, 'execute_approved_request', typedArgs, {
+            decision: 'denied',
+            reason: `Execution blocked because request ${requestId} is in status ${request.status}`,
+            result: 'error',
+            lifecycleStage: request.status === 'expired' ? 'expired' : 'executed',
+            approvalRequestId: requestId,
+            actor: typedArgs.executor,
+          });
           return err(`Approval request ${requestId} is not approved (current status: ${request.status})`);
         }
 
@@ -316,6 +376,15 @@ async function main(): Promise<void> {
             executor: executorIdentity.approver,
             executorAuthenticated: executorIdentity.authenticated,
           });
+          await auditLifecycleEvent(config, 'execute_approved_request', typedArgs, {
+            decision: 'denied',
+            reason: `Execution blocked because request ${requestId} expired`,
+            result: 'error',
+            lifecycleStage: 'expired',
+            approvalRequestId: requestId,
+            actor: executorIdentity.approver,
+            actorAuthenticated: executorIdentity.authenticated,
+          });
           return err(`Approval request ${requestId} has expired`);
         }
 
@@ -327,6 +396,17 @@ async function main(): Promise<void> {
           rejectionReason: request.metadata?.rejectionReason,
           executor: executorIdentity.approver,
           executorAuthenticated: executorIdentity.authenticated,
+        });
+        await auditLifecycleEvent(config, 'execute_approved_request', typedArgs, {
+          decision: result.isError ? 'denied' : 'allowed',
+          reason: result.isError
+            ? `Execution failed for request ${requestId}`
+            : `Execution completed for request ${requestId}`,
+          result: result.isError ? 'error' : 'success',
+          lifecycleStage: 'executed',
+          approvalRequestId: requestId,
+          actor: executorIdentity.approver,
+          actorAuthenticated: executorIdentity.authenticated,
         });
         return result;
       } catch (error) {

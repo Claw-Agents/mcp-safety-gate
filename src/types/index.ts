@@ -77,6 +77,9 @@ export interface AuditLogEntry {
   executionTimeMs?: number;
   ruleId?: string;
   approvalRequestId?: string;
+  lifecycleStage?: 'review-created' | 'approved' | 'rejected' | 'executed' | 'expired';
+  actor?: string;
+  actorAuthenticated?: boolean;
 }
 
 export interface ToolHandlerContext {

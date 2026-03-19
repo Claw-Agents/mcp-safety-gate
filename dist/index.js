@@ -588,11 +588,21 @@ async function updateApprovalRequestStatus(storePath, requestId, status, metadat
   return request;
 }
 
+// src/lib/auditHelpers.ts
+function sanitizeAuditArguments(arguments_) {
+  const clone = { ...arguments_ };
+  if ("authToken" in clone) {
+    clone.authToken = "[REDACTED]";
+  }
+  return clone;
+}
+
 // src/lib/toolWrapper.ts
 function wrapToolHandler(toolMetadata, originalHandler, config) {
   return async (arguments_) => {
     const startTime = Date.now();
     const toolName = toolMetadata.name;
+    const sanitizedArguments = sanitizeAuditArguments(arguments_);
     const validationDecision = validateToolArguments(toolName, arguments_);
     if (!validationDecision.allowed) {
       const executionTimeMs = Date.now() - startTime;
@@ -600,7 +610,7 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "denied",
           reason: validationDecision.reason,
           result: "error",
@@ -627,7 +637,7 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "denied",
           reason: policyDecision.reason,
           blockedKeywords: policyDecision.blockedKeywords,
@@ -660,14 +670,15 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "review",
           reason: policyDecision.reason,
           blockedKeywords: policyDecision.blockedKeywords,
           result: "pending",
           executionTimeMs,
           ruleId: policyDecision.ruleId,
-          approvalRequestId: approvalRequest.id
+          approvalRequestId: approvalRequest.id,
+          lifecycleStage: "review-created"
         },
         config.auditLogPath,
         config.verbose
@@ -689,7 +700,7 @@ Approval Request ID: ${approvalRequest.id}`
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "dryrun",
           reason: "Dry-Run Mode: Tool execution simulated, not actually run",
           result: "success",
@@ -715,7 +726,7 @@ Approval Request ID: ${approvalRequest.id}`
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "allowed",
           reason: "Policy check passed - tool executed",
           result: result.isError ? "error" : "success",
@@ -732,7 +743,7 @@ Approval Request ID: ${approvalRequest.id}`
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "allowed",
           reason: `Tool execution error: ${errorMessage}`,
           result: "error",
@@ -970,6 +981,24 @@ function err2(text) {
     isError: true
   };
 }
+async function auditLifecycleEvent(config, toolName, arguments_, options) {
+  await logToolCall(
+    {
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      toolName,
+      arguments: sanitizeAuditArguments(arguments_),
+      decision: options.decision,
+      reason: options.reason,
+      result: options.result,
+      approvalRequestId: options.approvalRequestId,
+      lifecycleStage: options.lifecycleStage,
+      actor: options.actor,
+      actorAuthenticated: options.actorAuthenticated
+    },
+    config.auditLogPath,
+    config.verbose
+  );
+}
 async function dispatchToolExecution(toolName, args, config) {
   switch (toolName) {
     case "shell_command":
@@ -1120,6 +1149,15 @@ async function main() {
             notes: typedArgs.notes
           }
         );
+        await auditLifecycleEvent(config, "approve_request", typedArgs, {
+          decision: "allowed",
+          reason: `Approval granted for request ${request.id}`,
+          result: "success",
+          lifecycleStage: "approved",
+          approvalRequestId: request.id,
+          actor: identity.approver,
+          actorAuthenticated: identity.authenticated
+        });
         return ok2(`Approved request ${request.id} for tool ${request.toolName}`);
       } catch (error) {
         return err2(error instanceof Error ? error.message : String(error));
@@ -1151,6 +1189,15 @@ async function main() {
             notes: typedArgs.notes
           }
         );
+        await auditLifecycleEvent(config, "reject_request", typedArgs, {
+          decision: "allowed",
+          reason: `Approval rejected for request ${request.id}`,
+          result: "success",
+          lifecycleStage: "rejected",
+          approvalRequestId: request.id,
+          actor: identity.approver,
+          actorAuthenticated: identity.authenticated
+        });
         return ok2(`Rejected request ${request.id} for tool ${request.toolName}`);
       } catch (error) {
         return err2(error instanceof Error ? error.message : String(error));
@@ -1174,6 +1221,14 @@ async function main() {
           return err2(`Approval request not found: ${requestId}`);
         }
         if (request.status !== "approved") {
+          await auditLifecycleEvent(config, "execute_approved_request", typedArgs, {
+            decision: "denied",
+            reason: `Execution blocked because request ${requestId} is in status ${request.status}`,
+            result: "error",
+            lifecycleStage: request.status === "expired" ? "expired" : "executed",
+            approvalRequestId: requestId,
+            actor: typedArgs.executor
+          });
           return err2(`Approval request ${requestId} is not approved (current status: ${request.status})`);
         }
         const executorIdentity = authenticateApprover(typedArgs.executor, typedArgs.authToken, config);
@@ -1186,6 +1241,15 @@ async function main() {
             executor: executorIdentity.approver,
             executorAuthenticated: executorIdentity.authenticated
           });
+          await auditLifecycleEvent(config, "execute_approved_request", typedArgs, {
+            decision: "denied",
+            reason: `Execution blocked because request ${requestId} expired`,
+            result: "error",
+            lifecycleStage: "expired",
+            approvalRequestId: requestId,
+            actor: executorIdentity.approver,
+            actorAuthenticated: executorIdentity.authenticated
+          });
           return err2(`Approval request ${requestId} has expired`);
         }
         const result = await dispatchToolExecution(request.toolName, request.arguments, config);
@@ -1196,6 +1260,15 @@ async function main() {
           rejectionReason: request.metadata?.rejectionReason,
           executor: executorIdentity.approver,
           executorAuthenticated: executorIdentity.authenticated
+        });
+        await auditLifecycleEvent(config, "execute_approved_request", typedArgs, {
+          decision: result.isError ? "denied" : "allowed",
+          reason: result.isError ? `Execution failed for request ${requestId}` : `Execution completed for request ${requestId}`,
+          result: result.isError ? "error" : "success",
+          lifecycleStage: "executed",
+          approvalRequestId: requestId,
+          actor: executorIdentity.approver,
+          actorAuthenticated: executorIdentity.authenticated
         });
         return result;
       } catch (error) {
