@@ -521,6 +521,30 @@ Typical flow:
 3. `approve_request` or `reject_request` resolves it
 4. `execute_approved_request` runs the approved action
 
+## Example Policy Files
+
+The `policies/` directory includes ready-to-use examples:
+
+- `policies/dev-balanced.policy.json`
+  - reasonable default for local development
+  - reviews important project files and sensitive reads
+
+- `policies/ci-friendly.policy.json`
+  - allows routine CI-style work
+  - reviews workflow/release-related changes
+  - denies secret access
+
+- `policies/strict-lockdown.policy.json`
+  - disables shell execution entirely
+  - reviews high-impact config changes
+  - tightly restricts sensitive paths
+
+Use one by setting:
+
+```bash
+export POLICY_FILE=./policies/dev-balanced.policy.json
+```
+
 ## Testing
 
 ```bash
@@ -539,6 +563,7 @@ Current test coverage includes:
 - persisted approval request creation and approval transitions
 - approval metadata for approvals and rejections
 - policy schema validation for valid and invalid policy files
+- validation of all example policy files in `policies/`
 
 ## Future Enhancements
 

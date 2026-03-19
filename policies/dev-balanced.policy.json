@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "deny-dangerous-shell-keywords",
+      "effect": "deny",
+      "reason": "Dangerous shell keywords are denied",
+      "tools": ["shell_command"],
+      "match": {
+        "keywords": [
+          "rm",
+          "rmdir",
+          "sudo",
+          "shred",
+          "mkfs",
+          "dd",
+          "wipe"
+        ]
+      }
+    },
+    {
+      "id": "review-package-json-writes",
+      "effect": "review",
+      "reason": "package.json writes require review",
+      "tools": ["write_file"],
+      "match": {
+        "pathSubstrings": ["package.json"]
+      }
+    },
+    {
+      "id": "review-workflow-writes",
+      "effect": "review",
+      "reason": "CI workflow changes require review",
+      "tools": ["write_file"],
+      "match": {
+        "pathSubstrings": [".github/workflows/"]
+      }
+    },
+    {
+      "id": "review-sensitive-reads",
+      "effect": "review",
+      "reason": "Sensitive reads require review",
+      "tools": ["read_file"],
+      "match": {
+        "pathSubstrings": [".env", ".ssh/", ".aws/"]
+      }
+    }
+  ]
+}

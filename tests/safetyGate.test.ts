@@ -255,3 +255,16 @@ test('approval metadata supports rejection details', async () => {
     assert.equal(rejected.metadata?.notes, 'Come back with tests first');
   });
 });
+
+test('example policy files are schema-valid', async () => {
+  const policyDir = path.resolve('policies');
+  const files = (await fs.readdir(policyDir)).filter(file => file.endsWith('.json'));
+  assert.ok(files.length > 0);
+
+  for (const file of files) {
+    const content = await fs.readFile(path.join(policyDir, file), 'utf-8');
+    const parsed = JSON.parse(content);
+    const policy = validatePolicy(parsed);
+    assert.equal(policy.version, 1, `Unexpected version in ${file}`);
+  }
+});
