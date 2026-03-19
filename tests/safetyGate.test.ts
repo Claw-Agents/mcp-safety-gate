@@ -167,12 +167,19 @@ test('approval store can approve and fetch requests', async () => {
     const approved = await updateApprovalRequestStatus(
       config.approvalStorePath,
       pending.id,
-      'approved'
+      'approved',
+      {
+        approver: 'Liv',
+        notes: 'Looks safe enough',
+      }
     );
     assert.equal(approved.status, 'approved');
+    assert.equal(approved.metadata?.approver, 'Liv');
+    assert.equal(approved.metadata?.notes, 'Looks safe enough');
 
     const loaded = await getApprovalRequest(config.approvalStorePath, pending.id);
     assert.equal(loaded?.status, 'approved');
+    assert.equal(loaded?.metadata?.approver, 'Liv');
   });
 });
 
@@ -212,4 +219,39 @@ test('policy schema validation rejects malformed policies', () => {
       }),
     /at least one matcher/
   );
+});
+
+test('approval metadata supports rejection details', async () => {
+  await withTempDir(async (_dir, config) => {
+    const handler = wrapToolHandler(
+      {
+        name: 'write_file',
+        description: 'Write content safely',
+      },
+      async () => ({
+        content: [{ type: 'text', text: 'ok' }],
+        isError: false,
+      }),
+      config
+    );
+
+    await handler({ path: 'package.json', content: '{}' });
+    const [pending] = await listApprovalRequests(config.approvalStorePath, 'pending');
+    assert.ok(pending);
+
+    const rejected = await updateApprovalRequestStatus(
+      config.approvalStorePath,
+      pending.id,
+      'rejected',
+      {
+        approver: 'Liv',
+        rejectionReason: 'Needs more review',
+        notes: 'Come back with tests first',
+      }
+    );
+
+    assert.equal(rejected.metadata?.approver, 'Liv');
+    assert.equal(rejected.metadata?.rejectionReason, 'Needs more review');
+    assert.equal(rejected.metadata?.notes, 'Come back with tests first');
+  });
 });

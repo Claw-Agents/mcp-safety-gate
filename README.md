@@ -158,11 +158,11 @@ List approval requests tracked by Safety Gate.
 
 ### 5. `approve_request`
 
-Approve a pending request by ID.
+Approve a pending request by ID. Supports optional approval metadata such as `approver` and `notes`.
 
 ### 6. `reject_request`
 
-Reject a pending request by ID.
+Reject a pending request by ID. Supports optional `approver`, `rejectionReason`, and `notes` metadata.
 
 ### 7. `execute_approved_request`
 
@@ -511,7 +511,8 @@ When a rule returns `review`, Safety Gate now:
 1. creates a persisted approval request with a unique ID
 2. returns `Review Required` plus that request ID
 3. waits for an operator to approve or reject it
-4. allows later execution via `execute_approved_request`
+4. stores optional approval metadata (`approver`, `notes`, `rejectionReason`)
+5. allows later execution via `execute_approved_request`
 
 Typical flow:
 
@@ -536,6 +537,7 @@ Current test coverage includes:
 - structured deny/review policy decisions
 - wrapper behavior for review-required requests
 - persisted approval request creation and approval transitions
+- approval metadata for approvals and rejections
 - policy schema validation for valid and invalid policy files
 
 ## Future Enhancements

@@ -56,7 +56,10 @@ async function dispatchToolExecution(
   }
 }
 
-function formatApprovalRequests(status: ApprovalStatus | 'all', items: Awaited<ReturnType<typeof listApprovalRequests>>): string {
+function formatApprovalRequests(
+  status: ApprovalStatus | 'all',
+  items: Awaited<ReturnType<typeof listApprovalRequests>>
+): string {
   if (items.length === 0) {
     return `No approval requests found for status: ${status}`;
   }
@@ -70,6 +73,11 @@ function formatApprovalRequests(status: ApprovalStatus | 'all', items: Awaited<R
         `Reason: ${item.reason}`,
         `Created: ${item.createdAt}`,
         item.resolvedAt ? `Resolved: ${item.resolvedAt}` : undefined,
+        item.metadata?.approver ? `Approver: ${item.metadata.approver}` : undefined,
+        item.metadata?.notes ? `Notes: ${item.metadata.notes}` : undefined,
+        item.metadata?.rejectionReason
+          ? `Rejection Reason: ${item.metadata.rejectionReason}`
+          : undefined,
       ]
         .filter(Boolean)
         .join('\n')
@@ -183,13 +191,20 @@ async function main(): Promise<void> {
     'Approve a pending review request',
     {
       requestId: z.string().describe('Approval request ID to approve'),
+      approver: z.string().optional().describe('Human or system approving the request'),
+      notes: z.string().optional().describe('Optional approval notes'),
     } as any,
     async (args: any) => {
       try {
+        const typedArgs = args as { requestId: string; approver?: string; notes?: string };
         const request = await updateApprovalRequestStatus(
           config.approvalStorePath,
-          (args as { requestId: string }).requestId,
-          'approved'
+          typedArgs.requestId,
+          'approved',
+          {
+            approver: typedArgs.approver,
+            notes: typedArgs.notes,
+          }
         );
         return ok(`Approved request ${request.id} for tool ${request.toolName}`);
       } catch (error) {
@@ -204,13 +219,27 @@ async function main(): Promise<void> {
     'Reject a pending review request',
     {
       requestId: z.string().describe('Approval request ID to reject'),
+      approver: z.string().optional().describe('Human or system rejecting the request'),
+      rejectionReason: z.string().optional().describe('Why the request was rejected'),
+      notes: z.string().optional().describe('Optional rejection notes'),
     } as any,
     async (args: any) => {
       try {
+        const typedArgs = args as {
+          requestId: string;
+          approver?: string;
+          rejectionReason?: string;
+          notes?: string;
+        };
         const request = await updateApprovalRequestStatus(
           config.approvalStorePath,
-          (args as { requestId: string }).requestId,
-          'rejected'
+          typedArgs.requestId,
+          'rejected',
+          {
+            approver: typedArgs.approver,
+            rejectionReason: typedArgs.rejectionReason,
+            notes: typedArgs.notes,
+          }
         );
         return ok(`Rejected request ${request.id} for tool ${request.toolName}`);
       } catch (error) {
@@ -240,7 +269,11 @@ async function main(): Promise<void> {
         }
 
         const result = await dispatchToolExecution(request.toolName, request.arguments, config);
-        await updateApprovalRequestStatus(config.approvalStorePath, requestId, 'executed');
+        await updateApprovalRequestStatus(config.approvalStorePath, requestId, 'executed', {
+          approver: request.metadata?.approver,
+          notes: request.metadata?.notes,
+          rejectionReason: request.metadata?.rejectionReason,
+        });
         return result;
       } catch (error) {
         return err(error instanceof Error ? error.message : String(error));

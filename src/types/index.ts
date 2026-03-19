@@ -30,6 +30,12 @@ export interface PolicyDecision {
   ruleId?: string;
 }
 
+export interface ApprovalRequestMetadata {
+  approver?: string;
+  notes?: string;
+  rejectionReason?: string;
+}
+
 export interface ApprovalRequest {
   id: string;
   toolName: string;
@@ -39,6 +45,7 @@ export interface ApprovalRequest {
   status: ApprovalStatus;
   createdAt: string;
   resolvedAt?: string;
+  metadata?: ApprovalRequestMetadata;
 }
 
 export interface AuditLogEntry {

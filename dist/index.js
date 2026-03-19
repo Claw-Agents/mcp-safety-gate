@@ -431,7 +431,7 @@ async function getApprovalRequest(storePath, requestId) {
   const requests = await readStore(storePath);
   return requests.find((request) => request.id === requestId);
 }
-async function updateApprovalRequestStatus(storePath, requestId, status) {
+async function updateApprovalRequestStatus(storePath, requestId, status, metadata) {
   const requests = await readStore(storePath);
   const request = requests.find((entry) => entry.id === requestId);
   if (!request) {
@@ -439,6 +439,10 @@ async function updateApprovalRequestStatus(storePath, requestId, status) {
   }
   request.status = status;
   request.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
+  request.metadata = {
+    ...request.metadata ?? {},
+    ...metadata ?? {}
+  };
   await writeStore(storePath, requests);
   return request;
 }
@@ -783,7 +787,10 @@ function formatApprovalRequests(status, items) {
       `Tool: ${item.toolName}`,
       `Reason: ${item.reason}`,
       `Created: ${item.createdAt}`,
-      item.resolvedAt ? `Resolved: ${item.resolvedAt}` : void 0
+      item.resolvedAt ? `Resolved: ${item.resolvedAt}` : void 0,
+      item.metadata?.approver ? `Approver: ${item.metadata.approver}` : void 0,
+      item.metadata?.notes ? `Notes: ${item.metadata.notes}` : void 0,
+      item.metadata?.rejectionReason ? `Rejection Reason: ${item.metadata.rejectionReason}` : void 0
     ].filter(Boolean).join("\n")
   ).join("\n\n");
 }
@@ -875,14 +882,21 @@ async function main() {
     "approve_request",
     "Approve a pending review request",
     {
-      requestId: z2.string().describe("Approval request ID to approve")
+      requestId: z2.string().describe("Approval request ID to approve"),
+      approver: z2.string().optional().describe("Human or system approving the request"),
+      notes: z2.string().optional().describe("Optional approval notes")
     },
     async (args) => {
       try {
+        const typedArgs = args;
         const request = await updateApprovalRequestStatus(
           config.approvalStorePath,
-          args.requestId,
-          "approved"
+          typedArgs.requestId,
+          "approved",
+          {
+            approver: typedArgs.approver,
+            notes: typedArgs.notes
+          }
         );
         return ok2(`Approved request ${request.id} for tool ${request.toolName}`);
       } catch (error) {
@@ -894,14 +908,23 @@ async function main() {
     "reject_request",
     "Reject a pending review request",
     {
-      requestId: z2.string().describe("Approval request ID to reject")
+      requestId: z2.string().describe("Approval request ID to reject"),
+      approver: z2.string().optional().describe("Human or system rejecting the request"),
+      rejectionReason: z2.string().optional().describe("Why the request was rejected"),
+      notes: z2.string().optional().describe("Optional rejection notes")
     },
     async (args) => {
       try {
+        const typedArgs = args;
         const request = await updateApprovalRequestStatus(
           config.approvalStorePath,
-          args.requestId,
-          "rejected"
+          typedArgs.requestId,
+          "rejected",
+          {
+            approver: typedArgs.approver,
+            rejectionReason: typedArgs.rejectionReason,
+            notes: typedArgs.notes
+          }
         );
         return ok2(`Rejected request ${request.id} for tool ${request.toolName}`);
       } catch (error) {
@@ -926,7 +949,11 @@ async function main() {
           return err2(`Approval request ${requestId} is not approved (current status: ${request.status})`);
         }
         const result = await dispatchToolExecution(request.toolName, request.arguments, config);
-        await updateApprovalRequestStatus(config.approvalStorePath, requestId, "executed");
+        await updateApprovalRequestStatus(config.approvalStorePath, requestId, "executed", {
+          approver: request.metadata?.approver,
+          notes: request.metadata?.notes,
+          rejectionReason: request.metadata?.rejectionReason
+        });
         return result;
       } catch (error) {
         return err2(error instanceof Error ? error.message : String(error));

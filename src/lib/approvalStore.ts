@@ -5,7 +5,11 @@
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { ApprovalRequest, ApprovalStatus } from '../types/index.js';
+import {
+  ApprovalRequest,
+  ApprovalRequestMetadata,
+  ApprovalStatus,
+} from '../types/index.js';
 
 async function ensureStoreExists(storePath: string): Promise<void> {
   await fs.mkdir(path.dirname(storePath), { recursive: true });
@@ -68,7 +72,8 @@ export async function getApprovalRequest(
 export async function updateApprovalRequestStatus(
   storePath: string,
   requestId: string,
-  status: ApprovalStatus
+  status: ApprovalStatus,
+  metadata?: ApprovalRequestMetadata
 ): Promise<ApprovalRequest> {
   const requests = await readStore(storePath);
   const request = requests.find(entry => entry.id === requestId);
@@ -79,6 +84,11 @@ export async function updateApprovalRequestStatus(
 
   request.status = status;
   request.resolvedAt = new Date().toISOString();
+  request.metadata = {
+    ...(request.metadata ?? {}),
+    ...(metadata ?? {}),
+  };
+
   await writeStore(storePath, requests);
   return request;
 }
