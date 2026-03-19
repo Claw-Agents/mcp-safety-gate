@@ -545,6 +545,10 @@ Use one by setting:
 export POLICY_FILE=./policies/dev-balanced.policy.json
 ```
 
+For OpenClaw wiring and end-to-end verification, see:
+
+- [`docs/OPENCLAW_INTEGRATION.md`](./docs/OPENCLAW_INTEGRATION.md)
+
 ## Testing
 
 ```bash
