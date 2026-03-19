@@ -6,6 +6,8 @@ import { promises as fs } from 'fs';
 import { executeShellCommand, readFileSafely, writeFileSafely } from '../src/lib/realTools.js';
 import { evaluateToolPolicy } from '../src/lib/policyEngine.js';
 import { validatePolicy } from '../src/lib/policySchema.js';
+import { validateApproverAuth } from '../src/lib/approverSchema.js';
+import { authenticateApprover } from '../src/lib/approverAuth.js';
 import { wrapToolHandler } from '../src/lib/toolWrapper.js';
 import {
   getApprovalRequest,
@@ -27,6 +29,9 @@ async function withTempDir(run: (dir: string, config: SafetyGateConfig) => Promi
     maxFileWriteBytes: 1024 * 1024,
     shellCommandTimeoutMs: 3_000,
     approvalStorePath: path.join(dir, 'approval-requests.json'),
+    approverAuthMode: 'off',
+    approverAuthFilePath: undefined,
+    approverAuth: undefined,
     policy: {
       version: 1,
       rules: [
@@ -290,4 +295,46 @@ test('example policy files are schema-valid', async () => {
     const policy = validatePolicy(parsed);
     assert.equal(policy.version, 1, `Unexpected version in ${file}`);
   }
+});
+
+test('approver auth schema validates token-based approver config', () => {
+  const parsed = validateApproverAuth({
+    version: 1,
+    approvers: [{ id: 'liv', tokenEnv: 'APPROVER_TOKEN_LIV' }],
+  });
+
+  assert.equal(parsed.approvers[0]?.id, 'liv');
+});
+
+test('approver authentication succeeds with configured token and fails otherwise', () => {
+  process.env.APPROVER_TOKEN_LIV = 'super-secret';
+
+  const configWithAuth: SafetyGateConfig = {
+    dryRun: false,
+    restrictedKeywords: [],
+    auditLogPath: './audit.jsonl',
+    verbose: false,
+    allowedPaths: ['.'],
+    shellAllowedCommands: ['echo'],
+    maxFileReadBytes: 1024,
+    maxFileWriteBytes: 1024,
+    shellCommandTimeoutMs: 1000,
+    approvalStorePath: './approval.json',
+    approverAuthMode: 'token',
+    approverAuthFilePath: './approvers.json',
+    approverAuth: {
+      version: 1,
+      approvers: [{ id: 'liv', tokenEnv: 'APPROVER_TOKEN_LIV' }],
+    },
+    policy: { version: 1, rules: [] },
+    policyFilePath: undefined,
+  };
+
+  const okIdentity = authenticateApprover('liv', 'super-secret', configWithAuth);
+  assert.equal(okIdentity.approver, 'liv');
+  assert.equal(okIdentity.authenticated, true);
+
+  assert.throws(() => authenticateApprover('liv', 'wrong', configWithAuth), /Invalid auth token/);
+
+  delete process.env.APPROVER_TOKEN_LIV;
 });

@@ -21,6 +21,7 @@ import {
   listApprovalRequests,
   updateApprovalRequestStatus,
 } from './lib/approvalStore.js';
+import { authenticateApprover } from './lib/approverAuth.js';
 import { ApprovalStatus, SafetyGateConfig } from './types/index.js';
 
 function ok(text: string): CallToolResult {
@@ -74,6 +75,9 @@ function formatApprovalRequests(
         `Created: ${item.createdAt}`,
         item.resolvedAt ? `Resolved: ${item.resolvedAt}` : undefined,
         item.metadata?.approver ? `Approver: ${item.metadata.approver}` : undefined,
+        item.metadata?.authenticated !== undefined
+          ? `Authenticated: ${item.metadata.authenticated}`
+          : undefined,
         item.metadata?.notes ? `Notes: ${item.metadata.notes}` : undefined,
         item.metadata?.rejectionReason
           ? `Rejection Reason: ${item.metadata.rejectionReason}`
@@ -192,17 +196,25 @@ async function main(): Promise<void> {
     {
       requestId: z.string().describe('Approval request ID to approve'),
       approver: z.string().optional().describe('Human or system approving the request'),
+      authToken: z.string().optional().describe('Approver authentication token when auth mode is enabled'),
       notes: z.string().optional().describe('Optional approval notes'),
     } as any,
     async (args: any) => {
       try {
-        const typedArgs = args as { requestId: string; approver?: string; notes?: string };
+        const typedArgs = args as {
+          requestId: string;
+          approver?: string;
+          authToken?: string;
+          notes?: string;
+        };
+        const identity = authenticateApprover(typedArgs.approver, typedArgs.authToken, config);
         const request = await updateApprovalRequestStatus(
           config.approvalStorePath,
           typedArgs.requestId,
           'approved',
           {
-            approver: typedArgs.approver,
+            approver: identity.approver,
+            authenticated: identity.authenticated,
             notes: typedArgs.notes,
           }
         );
@@ -220,6 +232,7 @@ async function main(): Promise<void> {
     {
       requestId: z.string().describe('Approval request ID to reject'),
       approver: z.string().optional().describe('Human or system rejecting the request'),
+      authToken: z.string().optional().describe('Approver authentication token when auth mode is enabled'),
       rejectionReason: z.string().optional().describe('Why the request was rejected'),
       notes: z.string().optional().describe('Optional rejection notes'),
     } as any,
@@ -228,15 +241,18 @@ async function main(): Promise<void> {
         const typedArgs = args as {
           requestId: string;
           approver?: string;
+          authToken?: string;
           rejectionReason?: string;
           notes?: string;
         };
+        const identity = authenticateApprover(typedArgs.approver, typedArgs.authToken, config);
         const request = await updateApprovalRequestStatus(
           config.approvalStorePath,
           typedArgs.requestId,
           'rejected',
           {
-            approver: typedArgs.approver,
+            approver: identity.approver,
+            authenticated: identity.authenticated,
             rejectionReason: typedArgs.rejectionReason,
             notes: typedArgs.notes,
           }
