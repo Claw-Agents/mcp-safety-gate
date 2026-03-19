@@ -340,3 +340,56 @@ test('approver authentication succeeds with configured token and fails otherwise
 
   delete process.env.APPROVER_TOKEN_LIV;
 });
+
+test('policy engine supports smarter path and shell argument matchers', () => {
+  const policy = validatePolicy({
+    version: 1,
+    rules: [
+      {
+        id: 'review-package-json-by-basename',
+        effect: 'review',
+        reason: 'package.json requires review',
+        tools: ['write_file'],
+        match: {
+          pathBasenames: ['package.json'],
+        },
+      },
+      {
+        id: 'deny-private-key-extension',
+        effect: 'deny',
+        reason: 'Private key extensions are denied',
+        tools: ['read_file'],
+        match: {
+          pathExtensions: ['.pem'],
+        },
+      },
+      {
+        id: 'deny-find-name-env',
+        effect: 'deny',
+        reason: 'Searching for env files is denied',
+        tools: ['shell_command'],
+        match: {
+          commandNames: ['find'],
+          commandArgsRegexes: ['-name\\s+\\.?env'],
+        },
+      },
+    ],
+  });
+
+  const reviewDecision = evaluateToolPolicy(
+    'write_file',
+    { path: '/tmp/project/package.json', content: '{}' },
+    policy
+  );
+  assert.equal(reviewDecision.effect, 'review');
+
+  const denyPemDecision = evaluateToolPolicy('read_file', { path: '/tmp/key.pem' }, policy);
+  assert.equal(denyPemDecision.effect, 'deny');
+
+  const denyFindDecision = evaluateToolPolicy(
+    'shell_command',
+    { command: 'find . -name .env' },
+    policy
+  );
+  assert.equal(denyFindDecision.effect, 'deny');
+});

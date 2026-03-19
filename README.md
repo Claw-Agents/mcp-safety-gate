@@ -177,15 +177,19 @@ Read content from a file with path sandboxing and size limits.
 
 List approval requests tracked by Safety Gate.
 
-### 5. `approve_request`
+### 5. `get_approval_request`
+
+Get a more detailed view of a single approval request, including target summary, write preview (when available), and full arguments.
+
+### 6. `approve_request`
 
 Approve a pending request by ID. Supports optional approval metadata such as `approver` and `notes`.
 
-### 6. `reject_request`
+### 7. `reject_request`
 
 Reject a pending request by ID. Supports optional `approver`, `rejectionReason`, and `notes` metadata.
 
-### 7. `execute_approved_request`
+### 8. `execute_approved_request`
 
 Execute a previously approved request by ID.
 
@@ -522,7 +526,11 @@ Example policy file:
 Supported matchers:
 - `keywords` — case-insensitive substring match across string arguments
 - `pathSubstrings` — case-insensitive substring match against the `path` argument
+- `pathRegexes` — regex match against normalized `path`
+- `pathBasenames` — basename match such as `package.json`
+- `pathExtensions` — extension match such as `.pem`
 - `commandNames` — command-name match for `shell_command`
+- `commandArgsRegexes` — regex match against shell command arguments (excluding the command name)
 
 Policy files are schema-validated at startup. Invalid rules fail fast instead of silently falling back to odd runtime behavior.
 

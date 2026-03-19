@@ -74,6 +74,7 @@ async function main(): Promise<void> {
       'write_file',
       'read_file',
       'list_approval_requests',
+      'get_approval_request',
       'approve_request',
       'reject_request',
       'execute_approved_request',
@@ -106,6 +107,16 @@ async function main(): Promise<void> {
       arguments: { status: 'pending' },
     });
     assert.match(textFromResult(pendingList), new RegExp(String(requestId)));
+    assert.match(textFromResult(pendingList), /Target:/);
+
+    const requestDetail = await client.callTool({
+      name: 'get_approval_request',
+      arguments: { requestId },
+    });
+    assert.equal(requestDetail.isError, false);
+    assert.match(textFromResult(requestDetail), /Arguments:/);
+    assert.match(textFromResult(requestDetail), /package.json/);
+    assert.match(textFromResult(requestDetail), /Write preview/);
 
     const badApproveResult = await client.callTool({
       name: 'approve_request',

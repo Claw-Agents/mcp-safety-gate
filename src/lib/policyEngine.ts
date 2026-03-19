@@ -53,13 +53,44 @@ function extractPathValue(arguments_: Record<string, unknown>): string | undefin
   return typeof arguments_.path === 'string' ? arguments_.path : undefined;
 }
 
+function normalizePathValue(pathValue: string | undefined): string | undefined {
+  return pathValue ? path.normalize(pathValue).toLowerCase() : undefined;
+}
+
 function matchesPathSubstrings(pathValue: string | undefined, pathSubstrings: string[]): boolean {
+  const normalized = normalizePathValue(pathValue);
+  if (!normalized) {
+    return false;
+  }
+
+  return pathSubstrings.some(fragment => normalized.includes(fragment.toLowerCase()));
+}
+
+function matchesPathRegexes(pathValue: string | undefined, pathRegexes: string[]): boolean {
+  const normalized = normalizePathValue(pathValue);
+  if (!normalized) {
+    return false;
+  }
+
+  return pathRegexes.some(pattern => new RegExp(pattern, 'i').test(normalized));
+}
+
+function matchesPathBasenames(pathValue: string | undefined, basenames: string[]): boolean {
   if (!pathValue) {
     return false;
   }
 
-  const normalized = path.normalize(pathValue).toLowerCase();
-  return pathSubstrings.some(fragment => normalized.includes(fragment.toLowerCase()));
+  const basename = path.basename(pathValue).toLowerCase();
+  return basenames.some(entry => entry.toLowerCase() === basename);
+}
+
+function matchesPathExtensions(pathValue: string | undefined, extensions: string[]): boolean {
+  if (!pathValue) {
+    return false;
+  }
+
+  const ext = path.extname(pathValue).toLowerCase();
+  return extensions.some(entry => entry.toLowerCase() === ext);
 }
 
 function extractCommandName(arguments_: Record<string, unknown>): string | undefined {
@@ -74,6 +105,29 @@ function extractCommandName(arguments_: Record<string, unknown>): string | undef
 
   const [firstToken] = command.split(/\s+/, 1);
   return firstToken?.toLowerCase();
+}
+
+function extractCommandArgs(arguments_: Record<string, unknown>): string[] {
+  if (typeof arguments_.command !== 'string') {
+    return [];
+  }
+
+  const command = arguments_.command.trim();
+  if (!command) {
+    return [];
+  }
+
+  const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return tokens.slice(1).map(token => token.replace(/^['"]|['"]$/g, ''));
+}
+
+function matchesCommandArgRegexes(arguments_: Record<string, unknown>, regexes: string[]): boolean {
+  const joinedArgs = extractCommandArgs(arguments_).join(' ');
+  if (!joinedArgs) {
+    return false;
+  }
+
+  return regexes.some(pattern => new RegExp(pattern, 'i').test(joinedArgs));
 }
 
 function matchesRule(
@@ -97,8 +151,32 @@ function matchesRule(
     }
   }
 
+  if (matchers.commandArgsRegexes && matchers.commandArgsRegexes.length > 0) {
+    if (!matchesCommandArgRegexes(arguments_, matchers.commandArgsRegexes)) {
+      return { matched: false };
+    }
+  }
+
   if (matchers.pathSubstrings && matchers.pathSubstrings.length > 0) {
     if (!matchesPathSubstrings(pathValue, matchers.pathSubstrings)) {
+      return { matched: false };
+    }
+  }
+
+  if (matchers.pathRegexes && matchers.pathRegexes.length > 0) {
+    if (!matchesPathRegexes(pathValue, matchers.pathRegexes)) {
+      return { matched: false };
+    }
+  }
+
+  if (matchers.pathBasenames && matchers.pathBasenames.length > 0) {
+    if (!matchesPathBasenames(pathValue, matchers.pathBasenames)) {
+      return { matched: false };
+    }
+  }
+
+  if (matchers.pathExtensions && matchers.pathExtensions.length > 0) {
+    if (!matchesPathExtensions(pathValue, matchers.pathExtensions)) {
       return { matched: false };
     }
   }

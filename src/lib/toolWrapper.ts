@@ -7,6 +7,8 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { evaluateToolPolicy, validateToolArguments } from './policyEngine.js';
 import { logToolCall } from './auditLogger.js';
 import { createApprovalRequest } from './approvalStore.js';
+import { sanitizeAuditArguments } from './auditHelpers.js';
+import { buildWriteFilePreview } from './writePreview.js';
 import { SafetyGateConfig } from '../types/index.js';
 
 export type ToolMetadata = {
@@ -27,6 +29,7 @@ export function wrapToolHandler(
   return async (arguments_: Record<string, unknown>): Promise<CallToolResult> => {
     const startTime = Date.now();
     const toolName = toolMetadata.name;
+    const sanitizedArguments = sanitizeAuditArguments(arguments_);
 
     // Step 1: Validate arguments structure
     const validationDecision = validateToolArguments(toolName, arguments_);
@@ -36,7 +39,7 @@ export function wrapToolHandler(
         {
           timestamp: new Date().toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: 'denied',
           reason: validationDecision.reason,
           result: 'error',
@@ -67,7 +70,7 @@ export function wrapToolHandler(
         {
           timestamp: new Date().toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: 'denied',
           reason: policyDecision.reason,
           blockedKeywords: policyDecision.blockedKeywords,
@@ -91,11 +94,19 @@ export function wrapToolHandler(
     }
 
     if (policyDecision.effect === 'review') {
+      const preview =
+        toolName === 'write_file' &&
+        typeof arguments_.path === 'string' &&
+        typeof arguments_.content === 'string'
+          ? await buildWriteFilePreview(arguments_.path, arguments_.content, config.allowedPaths)
+          : undefined;
+
       const approvalRequest = await createApprovalRequest(config.approvalStorePath, {
         toolName,
         arguments: arguments_,
         reason: policyDecision.reason,
         ruleId: policyDecision.ruleId,
+        metadata: preview ? { preview } : undefined,
       });
 
       const executionTimeMs = Date.now() - startTime;
@@ -103,7 +114,7 @@ export function wrapToolHandler(
         {
           timestamp: new Date().toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: 'review',
           reason: policyDecision.reason,
           blockedKeywords: policyDecision.blockedKeywords,
@@ -111,6 +122,7 @@ export function wrapToolHandler(
           executionTimeMs,
           ruleId: policyDecision.ruleId,
           approvalRequestId: approvalRequest.id,
+          lifecycleStage: 'review-created',
         },
         config.auditLogPath,
         config.verbose
@@ -134,7 +146,7 @@ export function wrapToolHandler(
         {
           timestamp: new Date().toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: 'dryrun',
           reason: 'Dry-Run Mode: Tool execution simulated, not actually run',
           result: 'success',
@@ -164,7 +176,7 @@ export function wrapToolHandler(
         {
           timestamp: new Date().toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: 'allowed',
           reason: 'Policy check passed - tool executed',
           result: result.isError ? 'error' : 'success',
@@ -183,7 +195,7 @@ export function wrapToolHandler(
         {
           timestamp: new Date().toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: 'allowed',
           reason: `Tool execution error: ${errorMessage}`,
           result: 'error',

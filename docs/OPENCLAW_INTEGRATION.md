@@ -162,8 +162,9 @@ Expected result:
 Use the approval-management tools:
 
 1. `list_approval_requests`
-2. `approve_request`
-3. `execute_approved_request`
+2. `get_approval_request`
+3. `approve_request`
+4. `execute_approved_request`
 
 If approver auth is enabled:
 - `approve_request` / `reject_request` must include:
@@ -174,6 +175,8 @@ If approver auth is enabled:
   - `authToken`
 
 Expected result:
+- `get_approval_request` shows a richer request view
+- write approvals include a preview summary when available
 - request moves from `pending` → `approved` → `executed`
 - metadata such as `approver`, `authenticated`, and `notes` persists
 - a second execution attempt is rejected
@@ -240,6 +243,8 @@ What it verifies:
 - approved requests can be executed successfully
 - replay attempts are rejected
 - expired approvals are marked `expired` and blocked
+
+The policy engine also supports richer matchers than the original prototype, including path regexes, path basenames/extensions, and shell-argument regexes.
 
 ## 10. Suggested next integration work
 

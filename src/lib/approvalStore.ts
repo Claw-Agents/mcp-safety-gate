@@ -35,7 +35,7 @@ async function writeStore(storePath: string, requests: ApprovalRequest[]): Promi
 
 export async function createApprovalRequest(
   storePath: string,
-  input: Pick<ApprovalRequest, 'toolName' | 'arguments' | 'reason' | 'ruleId'>
+  input: Pick<ApprovalRequest, 'toolName' | 'arguments' | 'reason' | 'ruleId' | 'metadata'>
 ): Promise<ApprovalRequest> {
   const requests = await readStore(storePath);
   const request: ApprovalRequest = {
@@ -46,6 +46,7 @@ export async function createApprovalRequest(
     ruleId: input.ruleId,
     status: 'pending',
     createdAt: new Date().toISOString(),
+    metadata: input.metadata,
   };
 
   requests.push(request);

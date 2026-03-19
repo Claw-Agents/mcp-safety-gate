@@ -20,9 +20,13 @@ var policyRuleSchema = z.object({
   match: z.object({
     keywords: z.array(z.string().min(1)).optional(),
     pathSubstrings: z.array(z.string().min(1)).optional(),
-    commandNames: z.array(z.string().min(1)).optional()
+    pathRegexes: z.array(z.string().min(1)).optional(),
+    pathBasenames: z.array(z.string().min(1)).optional(),
+    pathExtensions: z.array(z.string().min(1)).optional(),
+    commandNames: z.array(z.string().min(1)).optional(),
+    commandArgsRegexes: z.array(z.string().min(1)).optional()
   }).superRefine((value, ctx) => {
-    const hasMatcher = (value.keywords?.length ?? 0) > 0 || (value.pathSubstrings?.length ?? 0) > 0 || (value.commandNames?.length ?? 0) > 0;
+    const hasMatcher = (value.keywords?.length ?? 0) > 0 || (value.pathSubstrings?.length ?? 0) > 0 || (value.pathRegexes?.length ?? 0) > 0 || (value.pathBasenames?.length ?? 0) > 0 || (value.pathExtensions?.length ?? 0) > 0 || (value.commandNames?.length ?? 0) > 0 || (value.commandArgsRegexes?.length ?? 0) > 0;
     if (!hasMatcher) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -317,12 +321,36 @@ function containsKeywords(values, keywords) {
 function extractPathValue(arguments_) {
   return typeof arguments_.path === "string" ? arguments_.path : void 0;
 }
+function normalizePathValue(pathValue) {
+  return pathValue ? path3.normalize(pathValue).toLowerCase() : void 0;
+}
 function matchesPathSubstrings(pathValue, pathSubstrings) {
+  const normalized = normalizePathValue(pathValue);
+  if (!normalized) {
+    return false;
+  }
+  return pathSubstrings.some((fragment) => normalized.includes(fragment.toLowerCase()));
+}
+function matchesPathRegexes(pathValue, pathRegexes) {
+  const normalized = normalizePathValue(pathValue);
+  if (!normalized) {
+    return false;
+  }
+  return pathRegexes.some((pattern) => new RegExp(pattern, "i").test(normalized));
+}
+function matchesPathBasenames(pathValue, basenames) {
   if (!pathValue) {
     return false;
   }
-  const normalized = path3.normalize(pathValue).toLowerCase();
-  return pathSubstrings.some((fragment) => normalized.includes(fragment.toLowerCase()));
+  const basename = path3.basename(pathValue).toLowerCase();
+  return basenames.some((entry) => entry.toLowerCase() === basename);
+}
+function matchesPathExtensions(pathValue, extensions) {
+  if (!pathValue) {
+    return false;
+  }
+  const ext = path3.extname(pathValue).toLowerCase();
+  return extensions.some((entry) => entry.toLowerCase() === ext);
 }
 function extractCommandName(arguments_) {
   if (typeof arguments_.command !== "string") {
@@ -334,6 +362,24 @@ function extractCommandName(arguments_) {
   }
   const [firstToken] = command.split(/\s+/, 1);
   return firstToken?.toLowerCase();
+}
+function extractCommandArgs(arguments_) {
+  if (typeof arguments_.command !== "string") {
+    return [];
+  }
+  const command = arguments_.command.trim();
+  if (!command) {
+    return [];
+  }
+  const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return tokens.slice(1).map((token) => token.replace(/^['"]|['"]$/g, ""));
+}
+function matchesCommandArgRegexes(arguments_, regexes) {
+  const joinedArgs = extractCommandArgs(arguments_).join(" ");
+  if (!joinedArgs) {
+    return false;
+  }
+  return regexes.some((pattern) => new RegExp(pattern, "i").test(joinedArgs));
 }
 function matchesRule(toolName, arguments_, rule) {
   if (!rule.tools.includes("*") && !rule.tools.includes(toolName)) {
@@ -349,8 +395,28 @@ function matchesRule(toolName, arguments_, rule) {
       return { matched: false };
     }
   }
+  if (matchers.commandArgsRegexes && matchers.commandArgsRegexes.length > 0) {
+    if (!matchesCommandArgRegexes(arguments_, matchers.commandArgsRegexes)) {
+      return { matched: false };
+    }
+  }
   if (matchers.pathSubstrings && matchers.pathSubstrings.length > 0) {
     if (!matchesPathSubstrings(pathValue, matchers.pathSubstrings)) {
+      return { matched: false };
+    }
+  }
+  if (matchers.pathRegexes && matchers.pathRegexes.length > 0) {
+    if (!matchesPathRegexes(pathValue, matchers.pathRegexes)) {
+      return { matched: false };
+    }
+  }
+  if (matchers.pathBasenames && matchers.pathBasenames.length > 0) {
+    if (!matchesPathBasenames(pathValue, matchers.pathBasenames)) {
+      return { matched: false };
+    }
+  }
+  if (matchers.pathExtensions && matchers.pathExtensions.length > 0) {
+    if (!matchesPathExtensions(pathValue, matchers.pathExtensions)) {
       return { matched: false };
     }
   }
@@ -492,7 +558,8 @@ async function createApprovalRequest(storePath, input) {
     reason: input.reason,
     ruleId: input.ruleId,
     status: "pending",
-    createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    metadata: input.metadata
   };
   requests.push(request);
   await writeStore(storePath, requests);
@@ -522,11 +589,80 @@ async function updateApprovalRequestStatus(storePath, requestId, status, metadat
   return request;
 }
 
+// src/lib/auditHelpers.ts
+function sanitizeAuditArguments(arguments_) {
+  const clone = { ...arguments_ };
+  if ("authToken" in clone) {
+    clone.authToken = "[REDACTED]";
+  }
+  return clone;
+}
+
+// src/lib/writePreview.ts
+import { promises as fs6 } from "fs";
+
+// src/lib/fsPolicy.ts
+import path5 from "path";
+import { promises as fs5 } from "fs";
+function isPathWithinAllowedRoots(targetPath, allowedRoots) {
+  const resolvedTarget = path5.resolve(targetPath);
+  return allowedRoots.some((root) => {
+    const resolvedRoot = path5.resolve(root);
+    const relative = path5.relative(resolvedRoot, resolvedTarget);
+    return relative === "" || !relative.startsWith("..") && !path5.isAbsolute(relative);
+  });
+}
+function assertPathAllowed(targetPath, allowedRoots) {
+  const resolvedTarget = path5.resolve(targetPath);
+  if (!isPathWithinAllowedRoots(resolvedTarget, allowedRoots)) {
+    throw new Error(
+      `Path is outside allowed roots: ${resolvedTarget}. Allowed roots: ${allowedRoots.join(", ")}`
+    );
+  }
+  return resolvedTarget;
+}
+async function ensureParentDirectory(targetPath) {
+  await fs5.mkdir(path5.dirname(targetPath), { recursive: true });
+}
+
+// src/lib/writePreview.ts
+function truncateLines(content, maxLines = 8) {
+  return content.split("\n").slice(0, maxLines).join("\n");
+}
+async function buildWriteFilePreview(targetPath, content, allowedPaths) {
+  if (!isPathWithinAllowedRoots(targetPath, allowedPaths)) {
+    return void 0;
+  }
+  const nextBytes = Buffer.byteLength(content, "utf-8");
+  try {
+    const existing = await fs6.readFile(targetPath, "utf-8");
+    const currentBytes = Buffer.byteLength(existing, "utf-8");
+    return [
+      `Write preview`,
+      `Existing bytes: ${currentBytes}`,
+      `Proposed bytes: ${nextBytes}`,
+      `--- Current (first lines) ---`,
+      truncateLines(existing),
+      `--- Proposed (first lines) ---`,
+      truncateLines(content)
+    ].join("\n");
+  } catch {
+    return [
+      `Write preview`,
+      `New file`,
+      `Proposed bytes: ${nextBytes}`,
+      `--- Proposed (first lines) ---`,
+      truncateLines(content)
+    ].join("\n");
+  }
+}
+
 // src/lib/toolWrapper.ts
 function wrapToolHandler(toolMetadata, originalHandler, config) {
   return async (arguments_) => {
     const startTime = Date.now();
     const toolName = toolMetadata.name;
+    const sanitizedArguments = sanitizeAuditArguments(arguments_);
     const validationDecision = validateToolArguments(toolName, arguments_);
     if (!validationDecision.allowed) {
       const executionTimeMs = Date.now() - startTime;
@@ -534,7 +670,7 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "denied",
           reason: validationDecision.reason,
           result: "error",
@@ -561,7 +697,7 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "denied",
           reason: policyDecision.reason,
           blockedKeywords: policyDecision.blockedKeywords,
@@ -583,25 +719,28 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
       };
     }
     if (policyDecision.effect === "review") {
+      const preview = toolName === "write_file" && typeof arguments_.path === "string" && typeof arguments_.content === "string" ? await buildWriteFilePreview(arguments_.path, arguments_.content, config.allowedPaths) : void 0;
       const approvalRequest = await createApprovalRequest(config.approvalStorePath, {
         toolName,
         arguments: arguments_,
         reason: policyDecision.reason,
-        ruleId: policyDecision.ruleId
+        ruleId: policyDecision.ruleId,
+        metadata: preview ? { preview } : void 0
       });
       const executionTimeMs = Date.now() - startTime;
       await logToolCall(
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "review",
           reason: policyDecision.reason,
           blockedKeywords: policyDecision.blockedKeywords,
           result: "pending",
           executionTimeMs,
           ruleId: policyDecision.ruleId,
-          approvalRequestId: approvalRequest.id
+          approvalRequestId: approvalRequest.id,
+          lifecycleStage: "review-created"
         },
         config.auditLogPath,
         config.verbose
@@ -623,7 +762,7 @@ Approval Request ID: ${approvalRequest.id}`
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "dryrun",
           reason: "Dry-Run Mode: Tool execution simulated, not actually run",
           result: "success",
@@ -649,7 +788,7 @@ Approval Request ID: ${approvalRequest.id}`
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "allowed",
           reason: "Policy check passed - tool executed",
           result: result.isError ? "error" : "success",
@@ -666,7 +805,7 @@ Approval Request ID: ${approvalRequest.id}`
         {
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           toolName,
-          arguments: arguments_,
+          arguments: sanitizedArguments,
           decision: "allowed",
           reason: `Tool execution error: ${errorMessage}`,
           result: "error",
@@ -689,33 +828,9 @@ Approval Request ID: ${approvalRequest.id}`
 }
 
 // src/lib/realTools.ts
-import { promises as fs6 } from "fs";
+import { promises as fs7 } from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
-
-// src/lib/fsPolicy.ts
-import path5 from "path";
-import { promises as fs5 } from "fs";
-function isPathWithinAllowedRoots(targetPath, allowedRoots) {
-  const resolvedTarget = path5.resolve(targetPath);
-  return allowedRoots.some((root) => {
-    const resolvedRoot = path5.resolve(root);
-    const relative = path5.relative(resolvedRoot, resolvedTarget);
-    return relative === "" || !relative.startsWith("..") && !path5.isAbsolute(relative);
-  });
-}
-function assertPathAllowed(targetPath, allowedRoots) {
-  const resolvedTarget = path5.resolve(targetPath);
-  if (!isPathWithinAllowedRoots(resolvedTarget, allowedRoots)) {
-    throw new Error(
-      `Path is outside allowed roots: ${resolvedTarget}. Allowed roots: ${allowedRoots.join(", ")}`
-    );
-  }
-  return resolvedTarget;
-}
-async function ensureParentDirectory(targetPath) {
-  await fs5.mkdir(path5.dirname(targetPath), { recursive: true });
-}
 
 // src/lib/shellValidators.ts
 function extractPathLikeTokens(tokens) {
@@ -866,7 +981,7 @@ async function writeFileSafely(targetPath, content, config) {
       );
     }
     await ensureParentDirectory(resolvedPath);
-    await fs6.writeFile(resolvedPath, content, "utf-8");
+    await fs7.writeFile(resolvedPath, content, "utf-8");
     return ok(`File written: ${resolvedPath}
 Bytes written: ${byteLength}`);
   } catch (error) {
@@ -877,11 +992,11 @@ Bytes written: ${byteLength}`);
 async function readFileSafely(targetPath, config) {
   try {
     const resolvedPath = assertPathAllowed(targetPath, config.allowedPaths);
-    const stats = await fs6.stat(resolvedPath);
+    const stats = await fs7.stat(resolvedPath);
     if (stats.size > config.maxFileReadBytes) {
       throw new Error(`File exceeds MAX_FILE_READ_BYTES (${config.maxFileReadBytes} bytes)`);
     }
-    const content = await fs6.readFile(resolvedPath, "utf-8");
+    const content = await fs7.readFile(resolvedPath, "utf-8");
     return ok(`File read: ${resolvedPath}
 Content:
 ${content}`);
@@ -903,6 +1018,24 @@ function err2(text) {
     content: [{ type: "text", text }],
     isError: true
   };
+}
+async function auditLifecycleEvent(config, toolName, arguments_, options) {
+  await logToolCall(
+    {
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      toolName,
+      arguments: sanitizeAuditArguments(arguments_),
+      decision: options.decision,
+      reason: options.reason,
+      result: options.result,
+      approvalRequestId: options.approvalRequestId,
+      lifecycleStage: options.lifecycleStage,
+      actor: options.actor,
+      actorAuthenticated: options.actorAuthenticated
+    },
+    config.auditLogPath,
+    config.verbose
+  );
 }
 async function dispatchToolExecution(toolName, args, config) {
   switch (toolName) {
@@ -926,6 +1059,37 @@ function isApprovalExpired(resolvedAt, ttlSeconds) {
   const nowMs = Date.now();
   return nowMs - resolvedMs > ttlSeconds * 1e3;
 }
+function summarizeApprovalTarget(item) {
+  switch (item.toolName) {
+    case "write_file":
+    case "read_file":
+      return typeof item.arguments.path === "string" ? `path=${item.arguments.path}` : "path=<unknown>";
+    case "shell_command":
+      return typeof item.arguments.command === "string" ? `command=${item.arguments.command}` : "command=<unknown>";
+    default:
+      return JSON.stringify(item.arguments);
+  }
+}
+function formatApprovalRequestDetail(item) {
+  return [
+    `ID: ${item.id}`,
+    `Status: ${item.status}`,
+    `Tool: ${item.toolName}`,
+    `Target: ${summarizeApprovalTarget(item)}`,
+    `Reason: ${item.reason}`,
+    `Created: ${item.createdAt}`,
+    item.resolvedAt ? `Resolved: ${item.resolvedAt}` : void 0,
+    item.metadata?.approver ? `Approver: ${item.metadata.approver}` : void 0,
+    item.metadata?.authenticated !== void 0 ? `Authenticated: ${item.metadata.authenticated}` : void 0,
+    item.metadata?.notes ? `Notes: ${item.metadata.notes}` : void 0,
+    item.metadata?.rejectionReason ? `Rejection Reason: ${item.metadata.rejectionReason}` : void 0,
+    item.metadata?.preview ? `Preview:
+${item.metadata.preview}` : void 0,
+    item.metadata?.executor ? `Executor: ${item.metadata.executor}` : void 0,
+    item.metadata?.executorAuthenticated !== void 0 ? `Executor Authenticated: ${item.metadata.executorAuthenticated}` : void 0,
+    `Arguments: ${JSON.stringify(item.arguments, null, 2)}`
+  ].filter(Boolean).join("\n");
+}
 function formatApprovalRequests(status, items) {
   if (items.length === 0) {
     return `No approval requests found for status: ${status}`;
@@ -935,15 +1099,13 @@ function formatApprovalRequests(status, items) {
       `ID: ${item.id}`,
       `Status: ${item.status}`,
       `Tool: ${item.toolName}`,
+      `Target: ${summarizeApprovalTarget(item)}`,
       `Reason: ${item.reason}`,
-      `Created: ${item.createdAt}`,
-      item.resolvedAt ? `Resolved: ${item.resolvedAt}` : void 0,
       item.metadata?.approver ? `Approver: ${item.metadata.approver}` : void 0,
       item.metadata?.authenticated !== void 0 ? `Authenticated: ${item.metadata.authenticated}` : void 0,
-      item.metadata?.notes ? `Notes: ${item.metadata.notes}` : void 0,
-      item.metadata?.rejectionReason ? `Rejection Reason: ${item.metadata.rejectionReason}` : void 0,
       item.metadata?.executor ? `Executor: ${item.metadata.executor}` : void 0,
-      item.metadata?.executorAuthenticated !== void 0 ? `Executor Authenticated: ${item.metadata.executorAuthenticated}` : void 0
+      item.metadata?.executorAuthenticated !== void 0 ? `Executor Authenticated: ${item.metadata.executorAuthenticated}` : void 0,
+      item.metadata?.notes ? `Notes: ${item.metadata.notes}` : void 0
     ].filter(Boolean).join("\n")
   ).join("\n\n");
 }
@@ -1032,6 +1194,18 @@ async function main() {
     }
   );
   server.tool(
+    "get_approval_request",
+    "Get detailed information for a single approval request",
+    {
+      requestId: z3.string().describe("Approval request ID to inspect")
+    },
+    async (args) => {
+      const requestId = args.requestId;
+      const request = await getApprovalRequest(config.approvalStorePath, requestId);
+      return request ? ok2(formatApprovalRequestDetail(request)) : err2(`Approval request not found: ${requestId}`);
+    }
+  );
+  server.tool(
     "approve_request",
     "Approve a pending review request",
     {
@@ -1054,6 +1228,15 @@ async function main() {
             notes: typedArgs.notes
           }
         );
+        await auditLifecycleEvent(config, "approve_request", typedArgs, {
+          decision: "allowed",
+          reason: `Approval granted for request ${request.id}`,
+          result: "success",
+          lifecycleStage: "approved",
+          approvalRequestId: request.id,
+          actor: identity.approver,
+          actorAuthenticated: identity.authenticated
+        });
         return ok2(`Approved request ${request.id} for tool ${request.toolName}`);
       } catch (error) {
         return err2(error instanceof Error ? error.message : String(error));
@@ -1085,6 +1268,15 @@ async function main() {
             notes: typedArgs.notes
           }
         );
+        await auditLifecycleEvent(config, "reject_request", typedArgs, {
+          decision: "allowed",
+          reason: `Approval rejected for request ${request.id}`,
+          result: "success",
+          lifecycleStage: "rejected",
+          approvalRequestId: request.id,
+          actor: identity.approver,
+          actorAuthenticated: identity.authenticated
+        });
         return ok2(`Rejected request ${request.id} for tool ${request.toolName}`);
       } catch (error) {
         return err2(error instanceof Error ? error.message : String(error));
@@ -1108,6 +1300,14 @@ async function main() {
           return err2(`Approval request not found: ${requestId}`);
         }
         if (request.status !== "approved") {
+          await auditLifecycleEvent(config, "execute_approved_request", typedArgs, {
+            decision: "denied",
+            reason: `Execution blocked because request ${requestId} is in status ${request.status}`,
+            result: "error",
+            lifecycleStage: request.status === "expired" ? "expired" : "executed",
+            approvalRequestId: requestId,
+            actor: typedArgs.executor
+          });
           return err2(`Approval request ${requestId} is not approved (current status: ${request.status})`);
         }
         const executorIdentity = authenticateApprover(typedArgs.executor, typedArgs.authToken, config);
@@ -1120,6 +1320,15 @@ async function main() {
             executor: executorIdentity.approver,
             executorAuthenticated: executorIdentity.authenticated
           });
+          await auditLifecycleEvent(config, "execute_approved_request", typedArgs, {
+            decision: "denied",
+            reason: `Execution blocked because request ${requestId} expired`,
+            result: "error",
+            lifecycleStage: "expired",
+            approvalRequestId: requestId,
+            actor: executorIdentity.approver,
+            actorAuthenticated: executorIdentity.authenticated
+          });
           return err2(`Approval request ${requestId} has expired`);
         }
         const result = await dispatchToolExecution(request.toolName, request.arguments, config);
@@ -1131,13 +1340,22 @@ async function main() {
           executor: executorIdentity.approver,
           executorAuthenticated: executorIdentity.authenticated
         });
+        await auditLifecycleEvent(config, "execute_approved_request", typedArgs, {
+          decision: result.isError ? "denied" : "allowed",
+          reason: result.isError ? `Execution failed for request ${requestId}` : `Execution completed for request ${requestId}`,
+          result: result.isError ? "error" : "success",
+          lifecycleStage: "executed",
+          approvalRequestId: requestId,
+          actor: executorIdentity.approver,
+          actorAuthenticated: executorIdentity.authenticated
+        });
         return result;
       } catch (error) {
         return err2(error instanceof Error ? error.message : String(error));
       }
     }
   );
-  console.error("[SafetyGate] Registered 7 tools with security wrapping and approvals");
+  console.error("[SafetyGate] Registered 8 tools with security wrapping and approvals");
   console.error("[SafetyGate] Starting stdio transport...");
   const transport = new StdioServerTransport();
   await server.connect(transport);

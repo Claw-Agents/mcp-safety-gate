@@ -14,7 +14,11 @@ export interface PolicyRule {
   match: {
     keywords?: string[];
     pathSubstrings?: string[];
+    pathRegexes?: string[];
+    pathBasenames?: string[];
+    pathExtensions?: string[];
     commandNames?: string[];
+    commandArgsRegexes?: string[];
   };
 }
 
@@ -48,6 +52,7 @@ export interface ApprovalRequestMetadata {
   authenticated?: boolean;
   executor?: string;
   executorAuthenticated?: boolean;
+  preview?: string;
 }
 
 export interface ApprovalRequest {
@@ -73,6 +78,9 @@ export interface AuditLogEntry {
   executionTimeMs?: number;
   ruleId?: string;
   approvalRequestId?: string;
+  lifecycleStage?: 'review-created' | 'approved' | 'rejected' | 'executed' | 'expired';
+  actor?: string;
+  actorAuthenticated?: boolean;
 }
 
 export interface ToolHandlerContext {
