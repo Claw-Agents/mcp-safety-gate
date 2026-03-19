@@ -8,6 +8,7 @@ A TypeScript-based Model Context Protocol (MCP) server that acts as a security m
 - **📁 Path Sandboxing**: Restricts file reads and writes to configured safe roots
 - **🖥️ Safe Shell Execution**: Executes only allowlisted shell commands, rejects shell metacharacters, and validates path-like arguments
 - **🧭 Structured Policy Engine**: Supports per-tool allow/deny/review rules for keywords, paths, and command names
+- **✋ Explicit Approval Workflow**: Review-required requests are persisted with request IDs and can be approved, rejected, listed, and executed later
 - **🏃 Dry-Run Mode**: Optional simulation mode that logs intended actions without executing them
 - **📝 Audit Logging**: Automatically logs all intercepted tool calls to a local JSON Lines file with timestamps and metadata
 - **📋 MCP Compliant**: Follows the official Model Context Protocol specification using `@modelcontextprotocol/sdk`
@@ -51,6 +52,7 @@ Configuration is managed via environment variables:
 | `MAX_FILE_WRITE_BYTES` | Maximum bytes accepted by `write_file` | `262144` | `MAX_FILE_WRITE_BYTES=65536` |
 | `SHELL_COMMAND_TIMEOUT_MS` | Timeout for allowlisted shell commands | `5000` | `SHELL_COMMAND_TIMEOUT_MS=2000` |
 | `POLICY_FILE` | Optional path to a JSON policy file overriding the built-in default policy | built-in default policy | `POLICY_FILE=./policy/safety-gate.policy.json` |
+| `APPROVAL_STORE_PATH` | JSON file used to persist approval requests | `./approval-requests.json` | `APPROVAL_STORE_PATH=./data/approval-requests.json` |
 
 ### Example: Starting in Dry-Run Mode
 
@@ -99,7 +101,7 @@ The server blocks tool calls containing these patterns (case-insensitive substri
 
 ## Tools
 
-The server provides three intercepted tools:
+The server provides three intercepted tools plus approval-management tools:
 
 ### 1. `shell_command`
 
@@ -149,6 +151,22 @@ Writes are only allowed inside `ALLOWED_PATHS`, and parent directories are creat
 ### 3. `read_file`
 
 Read content from a file with path sandboxing and size limits.
+
+### 4. `list_approval_requests`
+
+List approval requests tracked by Safety Gate.
+
+### 5. `approve_request`
+
+Approve a pending request by ID.
+
+### 6. `reject_request`
+
+Reject a pending request by ID.
+
+### 7. `execute_approved_request`
+
+Execute a previously approved request by ID.
 
 **Input:**
 ```json
@@ -448,7 +466,7 @@ Safety Gate now supports a structured policy model with three effects:
 
 - `allow` — execution proceeds
 - `deny` — execution is blocked immediately
-- `review` — execution is paused and surfaced as requiring explicit review
+- `review` — execution is paused, persisted as an approval request, and surfaced as requiring explicit review
 
 Rules are evaluated in order, first match wins.
 
@@ -485,6 +503,21 @@ Supported matchers:
 - `pathSubstrings` — case-insensitive substring match against the `path` argument
 - `commandNames` — command-name match for `shell_command`
 
+## Approval Workflow
+
+When a rule returns `review`, Safety Gate now:
+1. creates a persisted approval request with a unique ID
+2. returns `Review Required` plus that request ID
+3. waits for an operator to approve or reject it
+4. allows later execution via `execute_approved_request`
+
+Typical flow:
+
+1. tool call hits a `review` rule
+2. `list_approval_requests` shows the pending request
+3. `approve_request` or `reject_request` resolves it
+4. `execute_approved_request` runs the approved action
+
 ## Testing
 
 ```bash
@@ -500,6 +533,7 @@ Current test coverage includes:
 - rejection of disallowed commands and shell metacharacters
 - structured deny/review policy decisions
 - wrapper behavior for review-required requests
+- persisted approval request creation and approval transitions
 
 ## Future Enhancements
 

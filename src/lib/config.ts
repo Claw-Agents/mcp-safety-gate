@@ -174,6 +174,7 @@ export async function loadConfig(): Promise<SafetyGateConfig> {
     shellCommandTimeoutMs: parseNumberEnv(process.env.SHELL_COMMAND_TIMEOUT_MS, 5_000),
     policy: await loadPolicy(policyFilePath),
     policyFilePath,
+    approvalStorePath: path.resolve(process.env.APPROVAL_STORE_PATH || './approval-requests.json'),
   };
 }
 
@@ -191,6 +192,7 @@ export function logConfigOnStartup(config: SafetyGateConfig): void {
   console.log(`  Shell Command Timeout (ms): ${config.shellCommandTimeoutMs}`);
   console.log(`  Policy File: ${config.policyFilePath ?? '<built-in default>'}`);
   console.log(`  Policy Rules: ${config.policy.rules.length}`);
+  console.log(`  Approval Store: ${config.approvalStorePath}`);
   console.log(`  Restricted Keywords: ${config.restrictedKeywords.length} patterns loaded`);
   console.log(`  Verbose Logging: ${config.verbose}`);
 }

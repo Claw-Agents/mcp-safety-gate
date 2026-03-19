@@ -6,6 +6,11 @@ import { promises as fs } from 'fs';
 import { executeShellCommand, readFileSafely, writeFileSafely } from '../src/lib/realTools.js';
 import { evaluateToolPolicy } from '../src/lib/policyEngine.js';
 import { wrapToolHandler } from '../src/lib/toolWrapper.js';
+import {
+  getApprovalRequest,
+  listApprovalRequests,
+  updateApprovalRequestStatus,
+} from '../src/lib/approvalStore.js';
 import { SafetyGateConfig } from '../src/types/index.js';
 
 async function withTempDir(run: (dir: string, config: SafetyGateConfig) => Promise<void>): Promise<void> {
@@ -20,6 +25,7 @@ async function withTempDir(run: (dir: string, config: SafetyGateConfig) => Promi
     maxFileReadBytes: 1024 * 1024,
     maxFileWriteBytes: 1024 * 1024,
     shellCommandTimeoutMs: 3_000,
+    approvalStorePath: path.join(dir, 'approval-requests.json'),
     policy: {
       version: 1,
       rules: [
@@ -108,7 +114,7 @@ test('structured policy can deny or require review before execution', async () =
   });
 });
 
-test('tool wrapper returns review required without executing handler', async () => {
+test('tool wrapper creates approval request and returns review required without executing handler', async () => {
   await withTempDir(async (_dir, config) => {
     let executed = false;
     const handler = wrapToolHandler(
@@ -129,6 +135,42 @@ test('tool wrapper returns review required without executing handler', async () 
     const result = await handler({ path: 'package.json', content: '{}' });
     assert.equal(result.isError, true);
     assert.equal(executed, false);
-    assert.match((result.content?.[0] as { text: string }).text, /Review Required/);
+    const responseText = (result.content?.[0] as { text: string }).text;
+    assert.match(responseText, /Review Required/);
+    assert.match(responseText, /Approval Request ID:/);
+
+    const pending = await listApprovalRequests(config.approvalStorePath, 'pending');
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]?.toolName, 'write_file');
+  });
+});
+
+test('approval store can approve and fetch requests', async () => {
+  await withTempDir(async (_dir, config) => {
+    const handler = wrapToolHandler(
+      {
+        name: 'write_file',
+        description: 'Write content safely',
+      },
+      async () => ({
+        content: [{ type: 'text', text: 'ok' }],
+        isError: false,
+      }),
+      config
+    );
+
+    await handler({ path: 'package.json', content: '{}' });
+    const [pending] = await listApprovalRequests(config.approvalStorePath, 'pending');
+    assert.ok(pending);
+
+    const approved = await updateApprovalRequestStatus(
+      config.approvalStorePath,
+      pending.id,
+      'approved'
+    );
+    assert.equal(approved.status, 'approved');
+
+    const loaded = await getApprovalRequest(config.approvalStorePath, pending.id);
+    assert.equal(loaded?.status, 'approved');
   });
 });

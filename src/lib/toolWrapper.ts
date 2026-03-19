@@ -6,6 +6,7 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { evaluateToolPolicy, validateToolArguments } from './policyEngine.js';
 import { logToolCall } from './auditLogger.js';
+import { createApprovalRequest } from './approvalStore.js';
 import { SafetyGateConfig } from '../types/index.js';
 
 export type ToolMetadata = {
@@ -90,6 +91,13 @@ export function wrapToolHandler(
     }
 
     if (policyDecision.effect === 'review') {
+      const approvalRequest = await createApprovalRequest(config.approvalStorePath, {
+        toolName,
+        arguments: arguments_,
+        reason: policyDecision.reason,
+        ruleId: policyDecision.ruleId,
+      });
+
       const executionTimeMs = Date.now() - startTime;
       await logToolCall(
         {
@@ -102,6 +110,7 @@ export function wrapToolHandler(
           result: 'pending',
           executionTimeMs,
           ruleId: policyDecision.ruleId,
+          approvalRequestId: approvalRequest.id,
         },
         config.auditLogPath,
         config.verbose
@@ -111,7 +120,7 @@ export function wrapToolHandler(
         content: [
           {
             type: 'text',
-            text: `Review Required: ${policyDecision.reason}`,
+            text: `Review Required: ${policyDecision.reason}\nApproval Request ID: ${approvalRequest.id}`,
           },
         ],
         isError: true,

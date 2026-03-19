@@ -152,7 +152,8 @@ async function loadConfig() {
     maxFileWriteBytes: parseNumberEnv(process.env.MAX_FILE_WRITE_BYTES, 256 * 1024),
     shellCommandTimeoutMs: parseNumberEnv(process.env.SHELL_COMMAND_TIMEOUT_MS, 5e3),
     policy: await loadPolicy(policyFilePath),
-    policyFilePath
+    policyFilePath,
+    approvalStorePath: path.resolve(process.env.APPROVAL_STORE_PATH || "./approval-requests.json")
   };
 }
 function logConfigOnStartup(config) {
@@ -166,6 +167,7 @@ function logConfigOnStartup(config) {
   console.log(`  Shell Command Timeout (ms): ${config.shellCommandTimeoutMs}`);
   console.log(`  Policy File: ${config.policyFilePath ?? "<built-in default>"}`);
   console.log(`  Policy Rules: ${config.policy.rules.length}`);
+  console.log(`  Approval Store: ${config.approvalStorePath}`);
   console.log(`  Restricted Keywords: ${config.restrictedKeywords.length} patterns loaded`);
   console.log(`  Verbose Logging: ${config.verbose}`);
 }
@@ -350,6 +352,63 @@ async function logToolCall(entry, auditLogPath, verbose = false) {
   }
 }
 
+// src/lib/approvalStore.ts
+import { randomUUID } from "crypto";
+import { promises as fs3 } from "fs";
+import path3 from "path";
+async function ensureStoreExists(storePath) {
+  await fs3.mkdir(path3.dirname(storePath), { recursive: true });
+  try {
+    await fs3.access(storePath);
+  } catch {
+    await fs3.writeFile(storePath, "[]", "utf-8");
+  }
+}
+async function readStore(storePath) {
+  await ensureStoreExists(storePath);
+  const content = await fs3.readFile(storePath, "utf-8");
+  const parsed = JSON.parse(content);
+  return Array.isArray(parsed) ? parsed : [];
+}
+async function writeStore(storePath, requests) {
+  await ensureStoreExists(storePath);
+  await fs3.writeFile(storePath, JSON.stringify(requests, null, 2), "utf-8");
+}
+async function createApprovalRequest(storePath, input) {
+  const requests = await readStore(storePath);
+  const request = {
+    id: randomUUID(),
+    toolName: input.toolName,
+    arguments: input.arguments,
+    reason: input.reason,
+    ruleId: input.ruleId,
+    status: "pending",
+    createdAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  requests.push(request);
+  await writeStore(storePath, requests);
+  return request;
+}
+async function listApprovalRequests(storePath, status) {
+  const requests = await readStore(storePath);
+  return status ? requests.filter((request) => request.status === status) : requests;
+}
+async function getApprovalRequest(storePath, requestId) {
+  const requests = await readStore(storePath);
+  return requests.find((request) => request.id === requestId);
+}
+async function updateApprovalRequestStatus(storePath, requestId, status) {
+  const requests = await readStore(storePath);
+  const request = requests.find((entry) => entry.id === requestId);
+  if (!request) {
+    throw new Error(`Approval request not found: ${requestId}`);
+  }
+  request.status = status;
+  request.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
+  await writeStore(storePath, requests);
+  return request;
+}
+
 // src/lib/toolWrapper.ts
 function wrapToolHandler(toolMetadata, originalHandler, config) {
   return async (arguments_) => {
@@ -411,6 +470,12 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
       };
     }
     if (policyDecision.effect === "review") {
+      const approvalRequest = await createApprovalRequest(config.approvalStorePath, {
+        toolName,
+        arguments: arguments_,
+        reason: policyDecision.reason,
+        ruleId: policyDecision.ruleId
+      });
       const executionTimeMs = Date.now() - startTime;
       await logToolCall(
         {
@@ -422,7 +487,8 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
           blockedKeywords: policyDecision.blockedKeywords,
           result: "pending",
           executionTimeMs,
-          ruleId: policyDecision.ruleId
+          ruleId: policyDecision.ruleId,
+          approvalRequestId: approvalRequest.id
         },
         config.auditLogPath,
         config.verbose
@@ -431,7 +497,8 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
         content: [
           {
             type: "text",
-            text: `Review Required: ${policyDecision.reason}`
+            text: `Review Required: ${policyDecision.reason}
+Approval Request ID: ${approvalRequest.id}`
           }
         ],
         isError: true
@@ -509,23 +576,23 @@ function wrapToolHandler(toolMetadata, originalHandler, config) {
 }
 
 // src/lib/realTools.ts
-import { promises as fs4 } from "fs";
+import { promises as fs5 } from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
 // src/lib/fsPolicy.ts
-import path3 from "path";
-import { promises as fs3 } from "fs";
+import path4 from "path";
+import { promises as fs4 } from "fs";
 function isPathWithinAllowedRoots(targetPath, allowedRoots) {
-  const resolvedTarget = path3.resolve(targetPath);
+  const resolvedTarget = path4.resolve(targetPath);
   return allowedRoots.some((root) => {
-    const resolvedRoot = path3.resolve(root);
-    const relative = path3.relative(resolvedRoot, resolvedTarget);
-    return relative === "" || !relative.startsWith("..") && !path3.isAbsolute(relative);
+    const resolvedRoot = path4.resolve(root);
+    const relative = path4.relative(resolvedRoot, resolvedTarget);
+    return relative === "" || !relative.startsWith("..") && !path4.isAbsolute(relative);
   });
 }
 function assertPathAllowed(targetPath, allowedRoots) {
-  const resolvedTarget = path3.resolve(targetPath);
+  const resolvedTarget = path4.resolve(targetPath);
   if (!isPathWithinAllowedRoots(resolvedTarget, allowedRoots)) {
     throw new Error(
       `Path is outside allowed roots: ${resolvedTarget}. Allowed roots: ${allowedRoots.join(", ")}`
@@ -534,7 +601,7 @@ function assertPathAllowed(targetPath, allowedRoots) {
   return resolvedTarget;
 }
 async function ensureParentDirectory(targetPath) {
-  await fs3.mkdir(path3.dirname(targetPath), { recursive: true });
+  await fs4.mkdir(path4.dirname(targetPath), { recursive: true });
 }
 
 // src/lib/realTools.ts
@@ -619,7 +686,7 @@ async function writeFileSafely(targetPath, content, config) {
       );
     }
     await ensureParentDirectory(resolvedPath);
-    await fs4.writeFile(resolvedPath, content, "utf-8");
+    await fs5.writeFile(resolvedPath, content, "utf-8");
     return ok(`File written: ${resolvedPath}
 Bytes written: ${byteLength}`);
   } catch (error) {
@@ -630,11 +697,11 @@ Bytes written: ${byteLength}`);
 async function readFileSafely(targetPath, config) {
   try {
     const resolvedPath = assertPathAllowed(targetPath, config.allowedPaths);
-    const stats = await fs4.stat(resolvedPath);
+    const stats = await fs5.stat(resolvedPath);
     if (stats.size > config.maxFileReadBytes) {
       throw new Error(`File exceeds MAX_FILE_READ_BYTES (${config.maxFileReadBytes} bytes)`);
     }
-    const content = await fs4.readFile(resolvedPath, "utf-8");
+    const content = await fs5.readFile(resolvedPath, "utf-8");
     return ok(`File read: ${resolvedPath}
 Content:
 ${content}`);
@@ -645,6 +712,47 @@ ${content}`);
 }
 
 // src/index.ts
+function ok2(text) {
+  return {
+    content: [{ type: "text", text }],
+    isError: false
+  };
+}
+function err2(text) {
+  return {
+    content: [{ type: "text", text }],
+    isError: true
+  };
+}
+async function dispatchToolExecution(toolName, args, config) {
+  switch (toolName) {
+    case "shell_command":
+      return executeShellCommand(args.command, config);
+    case "write_file": {
+      const { path: path5, content } = args;
+      return writeFileSafely(path5, content, config);
+    }
+    case "read_file":
+      return readFileSafely(args.path, config);
+    default:
+      return err2(`Unknown tool in approval execution: ${toolName}`);
+  }
+}
+function formatApprovalRequests(status, items) {
+  if (items.length === 0) {
+    return `No approval requests found for status: ${status}`;
+  }
+  return items.map(
+    (item) => [
+      `ID: ${item.id}`,
+      `Status: ${item.status}`,
+      `Tool: ${item.toolName}`,
+      `Reason: ${item.reason}`,
+      `Created: ${item.createdAt}`,
+      item.resolvedAt ? `Resolved: ${item.resolvedAt}` : void 0
+    ].filter(Boolean).join("\n")
+  ).join("\n\n");
+}
 async function main() {
   const config = await loadConfig();
   console.error("[SafetyGate] Initializing Security Middleware...");
@@ -685,8 +793,8 @@ async function main() {
           description: "Write content to a file within configured safe roots"
         },
         async () => {
-          const { path: path4, content } = args;
-          return writeFileSafely(path4, content, config);
+          const { path: path5, content } = args;
+          return writeFileSafely(path5, content, config);
         },
         config
       );
@@ -706,15 +814,92 @@ async function main() {
           description: "Read content from a file within configured safe roots"
         },
         async () => {
-          const { path: path4 } = args;
-          return readFileSafely(path4, config);
+          const { path: path5 } = args;
+          return readFileSafely(path5, config);
         },
         config
       );
       return wrappedHandler(args);
     }
   );
-  console.error("[SafetyGate] Registered 3 tools with security wrapping");
+  server.tool(
+    "list_approval_requests",
+    "List approval requests tracked by Safety Gate",
+    {
+      status: z.enum(["all", "pending", "approved", "rejected", "executed"]).optional()
+    },
+    async (args) => {
+      const status = args?.status ?? "all";
+      const requests = await listApprovalRequests(
+        config.approvalStorePath,
+        status === "all" ? void 0 : status
+      );
+      return ok2(formatApprovalRequests(status, requests));
+    }
+  );
+  server.tool(
+    "approve_request",
+    "Approve a pending review request",
+    {
+      requestId: z.string().describe("Approval request ID to approve")
+    },
+    async (args) => {
+      try {
+        const request = await updateApprovalRequestStatus(
+          config.approvalStorePath,
+          args.requestId,
+          "approved"
+        );
+        return ok2(`Approved request ${request.id} for tool ${request.toolName}`);
+      } catch (error) {
+        return err2(error instanceof Error ? error.message : String(error));
+      }
+    }
+  );
+  server.tool(
+    "reject_request",
+    "Reject a pending review request",
+    {
+      requestId: z.string().describe("Approval request ID to reject")
+    },
+    async (args) => {
+      try {
+        const request = await updateApprovalRequestStatus(
+          config.approvalStorePath,
+          args.requestId,
+          "rejected"
+        );
+        return ok2(`Rejected request ${request.id} for tool ${request.toolName}`);
+      } catch (error) {
+        return err2(error instanceof Error ? error.message : String(error));
+      }
+    }
+  );
+  server.tool(
+    "execute_approved_request",
+    "Execute a previously approved request",
+    {
+      requestId: z.string().describe("Approval request ID to execute")
+    },
+    async (args) => {
+      try {
+        const requestId = args.requestId;
+        const request = await getApprovalRequest(config.approvalStorePath, requestId);
+        if (!request) {
+          return err2(`Approval request not found: ${requestId}`);
+        }
+        if (request.status !== "approved") {
+          return err2(`Approval request ${requestId} is not approved (current status: ${request.status})`);
+        }
+        const result = await dispatchToolExecution(request.toolName, request.arguments, config);
+        await updateApprovalRequestStatus(config.approvalStorePath, requestId, "executed");
+        return result;
+      } catch (error) {
+        return err2(error instanceof Error ? error.message : String(error));
+      }
+    }
+  );
+  console.error("[SafetyGate] Registered 7 tools with security wrapping and approvals");
   console.error("[SafetyGate] Starting stdio transport...");
   const transport = new StdioServerTransport();
   await server.connect(transport);

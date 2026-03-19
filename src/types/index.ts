@@ -3,6 +3,7 @@
  */
 
 export type PolicyEffect = 'allow' | 'deny' | 'review';
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'executed';
 
 export interface PolicyRule {
   id: string;
@@ -29,6 +30,17 @@ export interface PolicyDecision {
   ruleId?: string;
 }
 
+export interface ApprovalRequest {
+  id: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  reason: string;
+  ruleId?: string;
+  status: ApprovalStatus;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
 export interface AuditLogEntry {
   timestamp: string;
   toolName: string;
@@ -39,6 +51,7 @@ export interface AuditLogEntry {
   blockedKeywords?: string[];
   executionTimeMs?: number;
   ruleId?: string;
+  approvalRequestId?: string;
 }
 
 export interface ToolHandlerContext {
@@ -59,4 +72,5 @@ export interface SafetyGateConfig {
   shellCommandTimeoutMs: number;
   policy: SafetyGatePolicy;
   policyFilePath?: string;
+  approvalStorePath: string;
 }

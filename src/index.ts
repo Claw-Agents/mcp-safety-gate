@@ -7,6 +7,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { loadConfig, logConfigOnStartup } from './lib/config.js';
 import { wrapToolHandler } from './lib/toolWrapper.js';
@@ -15,6 +16,66 @@ import {
   readFileSafely,
   writeFileSafely,
 } from './lib/realTools.js';
+import {
+  getApprovalRequest,
+  listApprovalRequests,
+  updateApprovalRequestStatus,
+} from './lib/approvalStore.js';
+import { ApprovalStatus, SafetyGateConfig } from './types/index.js';
+
+function ok(text: string): CallToolResult {
+  return {
+    content: [{ type: 'text', text }],
+    isError: false,
+  };
+}
+
+function err(text: string): CallToolResult {
+  return {
+    content: [{ type: 'text', text }],
+    isError: true,
+  };
+}
+
+async function dispatchToolExecution(
+  toolName: string,
+  args: Record<string, unknown>,
+  config: SafetyGateConfig
+): Promise<CallToolResult> {
+  switch (toolName) {
+    case 'shell_command':
+      return executeShellCommand((args as { command: string }).command, config);
+    case 'write_file': {
+      const { path, content } = args as { path: string; content: string };
+      return writeFileSafely(path, content, config);
+    }
+    case 'read_file':
+      return readFileSafely((args as { path: string }).path, config);
+    default:
+      return err(`Unknown tool in approval execution: ${toolName}`);
+  }
+}
+
+function formatApprovalRequests(status: ApprovalStatus | 'all', items: Awaited<ReturnType<typeof listApprovalRequests>>): string {
+  if (items.length === 0) {
+    return `No approval requests found for status: ${status}`;
+  }
+
+  return items
+    .map(item =>
+      [
+        `ID: ${item.id}`,
+        `Status: ${item.status}`,
+        `Tool: ${item.toolName}`,
+        `Reason: ${item.reason}`,
+        `Created: ${item.createdAt}`,
+        item.resolvedAt ? `Resolved: ${item.resolvedAt}` : undefined,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    )
+    .join('\n\n');
+}
 
 /**
  * Main server initialization
@@ -99,7 +160,95 @@ async function main(): Promise<void> {
     }
   );
 
-  console.error('[SafetyGate] Registered 3 tools with security wrapping');
+  // Tool 4: list_approval_requests
+  server.tool(
+    'list_approval_requests',
+    'List approval requests tracked by Safety Gate',
+    {
+      status: z.enum(['all', 'pending', 'approved', 'rejected', 'executed']).optional(),
+    } as any,
+    async (args: any) => {
+      const status = (args?.status ?? 'all') as ApprovalStatus | 'all';
+      const requests = await listApprovalRequests(
+        config.approvalStorePath,
+        status === 'all' ? undefined : status
+      );
+      return ok(formatApprovalRequests(status, requests));
+    }
+  );
+
+  // Tool 5: approve_request
+  server.tool(
+    'approve_request',
+    'Approve a pending review request',
+    {
+      requestId: z.string().describe('Approval request ID to approve'),
+    } as any,
+    async (args: any) => {
+      try {
+        const request = await updateApprovalRequestStatus(
+          config.approvalStorePath,
+          (args as { requestId: string }).requestId,
+          'approved'
+        );
+        return ok(`Approved request ${request.id} for tool ${request.toolName}`);
+      } catch (error) {
+        return err(error instanceof Error ? error.message : String(error));
+      }
+    }
+  );
+
+  // Tool 6: reject_request
+  server.tool(
+    'reject_request',
+    'Reject a pending review request',
+    {
+      requestId: z.string().describe('Approval request ID to reject'),
+    } as any,
+    async (args: any) => {
+      try {
+        const request = await updateApprovalRequestStatus(
+          config.approvalStorePath,
+          (args as { requestId: string }).requestId,
+          'rejected'
+        );
+        return ok(`Rejected request ${request.id} for tool ${request.toolName}`);
+      } catch (error) {
+        return err(error instanceof Error ? error.message : String(error));
+      }
+    }
+  );
+
+  // Tool 7: execute_approved_request
+  server.tool(
+    'execute_approved_request',
+    'Execute a previously approved request',
+    {
+      requestId: z.string().describe('Approval request ID to execute'),
+    } as any,
+    async (args: any) => {
+      try {
+        const requestId = (args as { requestId: string }).requestId;
+        const request = await getApprovalRequest(config.approvalStorePath, requestId);
+
+        if (!request) {
+          return err(`Approval request not found: ${requestId}`);
+        }
+
+        if (request.status !== 'approved') {
+          return err(`Approval request ${requestId} is not approved (current status: ${request.status})`);
+        }
+
+        const result = await dispatchToolExecution(request.toolName, request.arguments, config);
+        await updateApprovalRequestStatus(config.approvalStorePath, requestId, 'executed');
+        return result;
+      } catch (error) {
+        return err(error instanceof Error ? error.message : String(error));
+      }
+    }
+  );
+
+  console.error('[SafetyGate] Registered 7 tools with security wrapping and approvals');
   console.error('[SafetyGate] Starting stdio transport...');
 
   // Start the server
