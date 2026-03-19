@@ -20,11 +20,24 @@ async function main(): Promise<void> {
   const repoPackageJson = path.join(repoRoot, 'package.json');
   const readmePath = path.join(repoRoot, 'README.md');
   const policyFile = path.resolve('policies/dev-balanced.policy.json');
+  const approverFile = path.join(runtimeRoot, 'approvers.json');
 
   await fs.mkdir(repoRoot, { recursive: true });
   await fs.mkdir(runtimeRoot, { recursive: true });
   await fs.writeFile(readmePath, '# Demo Repo\n', 'utf-8');
   await fs.writeFile(repoPackageJson, '{"name":"demo"}\n', 'utf-8');
+  await fs.writeFile(
+    approverFile,
+    JSON.stringify(
+      {
+        version: 1,
+        approvers: [{ id: 'liv', tokenEnv: 'APPROVER_TOKEN_LIV' }],
+      },
+      null,
+      2
+    ),
+    'utf-8'
+  );
 
   const transport = new StdioClientTransport({
     command: 'node',
@@ -36,6 +49,9 @@ async function main(): Promise<void> {
       POLICY_FILE: policyFile,
       AUDIT_LOG_PATH: path.join(runtimeRoot, 'audit-log.jsonl'),
       APPROVAL_STORE_PATH: path.join(runtimeRoot, 'approval-requests.json'),
+      APPROVER_AUTH_MODE: 'token',
+      APPROVER_AUTH_FILE: approverFile,
+      APPROVER_TOKEN_LIV: 'integration-secret',
     },
   });
 
@@ -89,11 +105,23 @@ async function main(): Promise<void> {
     });
     assert.match(textFromResult(pendingList), new RegExp(String(requestId)));
 
+    const badApproveResult = await client.callTool({
+      name: 'approve_request',
+      arguments: {
+        requestId,
+        approver: 'liv',
+        authToken: 'wrong-token',
+      },
+    });
+    assert.equal(badApproveResult.isError, true);
+    assert.match(textFromResult(badApproveResult), /Invalid auth token/);
+
     const approveResult = await client.callTool({
       name: 'approve_request',
       arguments: {
         requestId,
-        approver: 'integration-harness',
+        approver: 'liv',
+        authToken: 'integration-secret',
         notes: 'approved during end-to-end test',
       },
     });
@@ -113,7 +141,8 @@ async function main(): Promise<void> {
       arguments: { status: 'executed' },
     });
     const executedText = textFromResult(executedList);
-    assert.match(executedText, /integration-harness/);
+    assert.match(executedText, /Approver: liv/);
+    assert.match(executedText, /Authenticated: true/);
     assert.match(executedText, /approved during end-to-end test/);
 
     console.log('Integration harness passed.');

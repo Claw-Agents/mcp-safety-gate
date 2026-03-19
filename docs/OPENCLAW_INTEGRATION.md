@@ -54,6 +54,14 @@ export AUDIT_LOG_PATH=/absolute/path/to/mcp-safety-gate/runtime/audit-log.jsonl
 export APPROVAL_STORE_PATH=/absolute/path/to/mcp-safety-gate/runtime/approval-requests.json
 ```
 
+If you want authenticated approvals, also set:
+
+```bash
+export APPROVER_AUTH_MODE=token
+export APPROVER_AUTH_FILE=/absolute/path/to/mcp-safety-gate/approvers/example.approvers.json
+export APPROVER_TOKEN_LIV=replace-me
+```
+
 Recommended practice:
 
 - keep `ALLOWED_PATHS` narrow
@@ -89,6 +97,9 @@ Use the Safety Gate server as a stdio MCP backend with this payload shape:
     "POLICY_FILE": "/absolute/path/to/mcp-safety-gate/policies/dev-balanced.policy.json",
     "AUDIT_LOG_PATH": "/absolute/path/to/mcp-safety-gate/runtime/audit-log.jsonl",
     "APPROVAL_STORE_PATH": "/absolute/path/to/mcp-safety-gate/runtime/approval-requests.json",
+    "APPROVER_AUTH_MODE": "token",
+    "APPROVER_AUTH_FILE": "/absolute/path/to/mcp-safety-gate/approvers/example.approvers.json",
+    "APPROVER_TOKEN_LIV": "replace-me",
     "SHELL_ALLOWED_COMMANDS": "pwd,ls,cat,head,tail,wc,find,grep,which,echo",
     "MAX_FILE_READ_BYTES": "1048576",
     "MAX_FILE_WRITE_BYTES": "262144",
@@ -153,9 +164,13 @@ Use the approval-management tools:
 2. `approve_request`
 3. `execute_approved_request`
 
+If approver auth is enabled, `approve_request` / `reject_request` must include:
+- `approver`
+- `authToken`
+
 Expected result:
 - request moves from `pending` → `approved` → `executed`
-- metadata such as `approver` and `notes` persists
+- metadata such as `approver`, `authenticated`, and `notes` persists
 
 ## 7. Recommended starting posture
 
@@ -213,6 +228,7 @@ What it verifies:
 - required tools are exposed
 - safe reads succeed
 - review-required writes create an approval request
+- invalid approver tokens are rejected when auth mode is enabled
 - approval metadata can be attached
 - approved requests can be executed successfully
 
